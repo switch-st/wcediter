@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"wcediter/wcsave"
 
@@ -334,38 +333,58 @@ func loadSaveFile(filePath string) error {
 }
 
 // 创建角色选择下拉框
-func createCharacterSelector(onCharacterChange characterSelectCallback) *widget.Select {
-	options := []string{}
+func createCharacterTabs(propertyInputs []*propertyInput) *container.AppTabs {
+	// 创建标签页容器，使用底部标签样式以便更好地显示角色信息
+	tabs := container.NewAppTabs()
+	// 设置标签页位置在顶部，这是更常见的标签页布局
+	tabs.SetTabLocation(container.TabLocationTop)
+
 	if editor != nil {
 		for i := 0; i < editor.GetCharacterCount(); i++ {
 			if char, ok := editor.GetCharacterByIndex(i); ok {
-				options = append(options, fmt.Sprintf("%d. %s", i+1, char.Name))
-			}
-		}
-	}
-
-	selector := widget.NewSelect(options, func(value string) {
-		if value != "" {
-			// 提取角色索引
-			parts := strings.Split(value, ".")
-			if len(parts) > 0 {
-				index, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-				if err == nil {
-					charIndex = index - 1
-					if onCharacterChange != nil {
-						onCharacterChange(charIndex)
-					}
+				// 为每个角色创建新的属性输入框副本
+				charPropertyInputs := make([]*propertyInput, len(propertyInputs))
+				for j, input := range propertyInputs {
+					charPropertyInputs[j] = createPropertyInput(input.property, input.label.Text, "0")
+					// 为输入框设置固定宽度，确保在不同平台上的一致性
+					charPropertyInputs[j].input.Wrapping = fyne.TextWrapOff
+					charPropertyInputs[j].input.Resize(fyne.NewSize(150, 30))
 				}
+
+				// 创建角色属性的网格布局
+				inputGrid := container.New(layout.NewGridLayout(2))
+				for _, input := range charPropertyInputs {
+					inputGrid.Add(input.label)
+					inputGrid.Add(input.input)
+				}
+
+				// 创建保存按钮
+				saveButton := widget.NewButton("保存角色数据", func() {
+					if editor == nil {
+						dialog.ShowError(fmt.Errorf("没有加载的存档文件"), nil)
+						return
+					}
+					err := saveCharacterChanges(i, charPropertyInputs)
+					if err != nil {
+						dialog.ShowError(err, nil)
+						return
+					}
+					dialog.ShowInformation("成功", "角色数据保存成功", nil)
+				})
+
+				// 更新角色数据到输入框
+				updateCharacterUI(i, charPropertyInputs)
+
+				// 创建角色标签页，并确保在不同平台上有良好的显示效果
+				buttonHBox := container.NewHBox(layout.NewSpacer(), saveButton, layout.NewSpacer())
+				tabContent := container.NewPadded(container.NewVBox(inputGrid, layout.NewSpacer(), buttonHBox))
+
+				tabs.Append(container.NewTabItem(fmt.Sprintf("%d. %s", i+1, char.Name), tabContent))
 			}
 		}
-	})
-
-	// 默认选择第一个角色
-	if len(options) > 0 {
-		selector.SetSelected(options[0])
 	}
 
-	return selector
+	return tabs
 }
 
 // 更新角色数据界面
@@ -549,12 +568,7 @@ func createMainUI() *fyne.Container {
 		statusLabel.SetText(fmt.Sprintf("已加载存档: %s", currentSave))
 	}
 
-	// 创建角色选择器
-	characterSelector := createCharacterSelector(func(index int) {
-		// 角色切换时的处理逻辑将在创建完propertyInputs后添加
-	})
-
-	// 创建属性输入框
+	// 创建属性输入框模板
 	propertyInputs := []*propertyInput{
 		createPropertyInput("CurrentExp", "当前经验值:", "0"),
 		createPropertyInput("NextLevelExp", "升级经验值:", "0"),
@@ -572,19 +586,8 @@ func createMainUI() *fyne.Container {
 		createPropertyInput("Level", "等级:", "0"),
 	}
 
-	// 重新设置角色选择回调，确保可以访问propertyInputs
-	characterSelector.OnChanged = func(value string) {
-		if value != "" {
-			parts := strings.Split(value, ".")
-			if len(parts) > 0 {
-				index, err := strconv.Atoi(strings.TrimSpace(parts[0]))
-				if err == nil {
-					charIndex = index - 1
-					updateCharacterUI(charIndex, propertyInputs)
-				}
-			}
-		}
-	}
+	// 创建角色标签页
+	characterTabs := createCharacterTabs(propertyInputs)
 
 	// 获取银两值
 	if editor != nil {
@@ -613,19 +616,7 @@ func createMainUI() *fyne.Container {
 		dialog.ShowInformation("成功", "银两修改成功", nil)
 	})
 
-	// 创建保存角色按钮
-	saveButton := widget.NewButton("保存角色数据", func() {
-		if editor == nil || editor.GetCharacterCount() == 0 {
-			dialog.ShowError(fmt.Errorf("没有加载的存档文件或角色数据"), nil)
-			return
-		}
-		err := saveCharacterChanges(charIndex, propertyInputs)
-		if err != nil {
-			dialog.ShowError(err, nil)
-			return
-		}
-		dialog.ShowInformation("成功", "角色数据保存成功", nil)
-	})
+	// 保存角色按钮已移至每个标签页内，此处不再需要
 
 	// 创建保存文件按钮
 	saveFileButton := widget.NewButton("保存更改到文件", func() {
@@ -691,9 +682,6 @@ func createMainUI() *fyne.Container {
 		propertyGrid.Add(propertyItem)
 	}
 
-	// 创建按钮容器
-	buttonContainer := container.NewGridWithColumns(3, saveButton, saveFileButton)
-
 	// 创建银两容器
 	moneyContainer := container.NewGridWithColumns(3, moneyLabel, moneyInput, moneyButton)
 
@@ -701,28 +689,17 @@ func createMainUI() *fyne.Container {
 	mainContainer := container.NewVBox(
 		// 隐藏标题和状态信息
 		widget.NewSeparator(),
-		widget.NewLabel("选择角色:"),
-		characterSelector,
-		widget.NewSeparator(),
-		widget.NewLabel("角色属性:"),
-		// 为属性网格添加边框效果
-		container.NewPadded(
-			widget.NewCard(
-				"", // 无边框标题
-				"", // 无边框副标题
-				propertyGrid,
-			),
-		),
+		widget.NewLabel("角色属性管理:"),
+		// 使用角色标签页替代选择器和属性网格
+		characterTabs,
 		widget.NewSeparator(),
 		moneyContainer,
 		layout.NewSpacer(),
-		buttonContainer,
+		// 只保留保存文件按钮，角色保存按钮已移至每个标签页内
+		saveFileButton,
 	)
 
-	// 初始化显示第一个角色的数据
-	if editor != nil && editor.GetCharacterCount() > 0 {
-		updateCharacterUI(charIndex, propertyInputs)
-	}
+	// 标签页已在createCharacterTabs中初始化了所有角色的数据
 
 	return mainContainer
 }
