@@ -46,10 +46,14 @@ func copyFile(src, dst string) error {
 
 // SaveChanges 保存修改到新文件
 func SaveChanges(sourceFilePath, destFilePath string, characters []models.CharacterInfo, moneyInfo models.MoneyInfo) error {
-	// 复制源文件到目标文件
-	err := copyFile(sourceFilePath, destFilePath)
-	if err != nil {
-		return err
+	var err error
+
+	// 复制源文件到目标文件（如果路径不同）
+	if sourceFilePath != destFilePath {
+		err = copyFile(sourceFilePath, destFilePath)
+		if err != nil {
+			return err
+		}
 	}
 
 	// 保存银两修改

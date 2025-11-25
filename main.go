@@ -19,22 +19,20 @@ import (
 )
 
 var (
-	// 命令行参数
-	saveFilePath string
-	debugMode    bool
-
 	// 全局状态
-	fyneApp        fyne.App
-	editor         *wcsave.SaveEditor
-	currentSave    string
-	currentWindow  fyne.Window
-	charIndex      = 0
-	propertyInputs []*propertyInput
-	characterStats map[string]int
+	fyneApp         fyne.App
+	editor          *wcsave.SaveEditor
+	currentSave     string
+	currentWindow   fyne.Window
+	characterWindow fyne.Window // 角色属性编辑窗口
+	charIndex       = 0
+	propertyInputs  []*propertyInput
+	// 保存每个角色的属性输入框
+	characterPropertyInputs map[int][]*propertyInput
 
 	// 存档进度相关
 	progressNames = []string{"进度一", "进度二", "进度三", "进度四", "进度五"}
-	progressFiles = []string{"Save0.dat", "Save1.dat", "Save2.dat", "Save3.dat", "Save4.dat"}
+	progressFiles = []string{"Save1.dat", "Save2.dat", "Save3.dat", "Save4.dat", "Save5.dat"}
 )
 
 // 属性输入框结构体
@@ -43,9 +41,6 @@ type propertyInput struct {
 	input    *widget.Entry
 	property string
 }
-
-// 角色选择回调函数
-type characterSelectCallback func(int)
 
 // 进度选择回调函数
 type progressSelectCallback func(int)
@@ -124,47 +119,6 @@ func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 	return content
 }
 
-// 显示进度选择对话框
-func showProgressDialog(window fyne.Window, onSelect progressSelectCallback) {
-	// 创建单选按钮组
-	radio := widget.NewRadioGroup(progressNames, func(selected string) {
-		// 选择后的处理在对话框按钮中处理
-	})
-
-	// 默认选择第一个进度
-	if len(progressNames) > 0 {
-		radio.SetSelected(progressNames[0])
-	}
-
-	// 创建内容容器
-	content := container.NewVBox(
-		widget.NewLabel("请选择欲修改的进度名:"),
-		container.NewPadded(radio),
-	)
-
-	// 创建对话框
-	dialog.ShowCustomConfirm(
-		"进度选择",
-		"确定",
-		"取消",
-		content,
-		func(confirm bool) {
-			if confirm && radio.Selected != "" {
-				// 查找选择的进度索引
-				for i, name := range progressNames {
-					if name == radio.Selected {
-						if onSelect != nil {
-							onSelect(i)
-						}
-						break
-					}
-				}
-			}
-		},
-		window,
-	)
-}
-
 // 创建属性输入框
 func createPropertyInput(property, labelText string, initialValue string) *propertyInput {
 	label := widget.NewLabel(labelText)
@@ -230,7 +184,7 @@ func openCharacterWindow(progressIndex int) {
 	log.Println("创建角色属性窗口...")
 	// 在标题后添加进度信息
 	title := fmt.Sprintf("角色属性编辑 - %s", progressNames[progressIndex])
-	characterWindow := fyneApp.NewWindow(title)
+	characterWindow = fyneApp.NewWindow(title)
 
 	// 设置更大的窗口大小以确保所有角色属性都能完整显示
 	characterWindow.Resize(fyne.NewSize(650, 800))
@@ -259,46 +213,6 @@ func openCharacterWindow(progressIndex int) {
 	characterWindow.Canvas().Focus(nil)
 	characterWindow.CenterOnScreen() // 居中显示窗口
 	characterWindow.Show()
-}
-
-// 根据进度索引加载存档文件
-func loadProgressFile(progressIndex int) {
-	if progressIndex < 0 || progressIndex >= len(progressFiles) {
-		log.Printf("无效的进度索引: %d", progressIndex)
-		dialog.ShowError(fmt.Errorf("无效的进度索引"), nil)
-		return
-	}
-
-	// 构建存档文件路径
-	// 首先尝试在data目录中查找
-	dataDir := filepath.Join(getCurrentDir(), "data")
-	filePath := filepath.Join(dataDir, progressFiles[progressIndex])
-
-	// 如果data目录中的文件不存在，尝试其他可能的路径
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		// 尝试直接在当前目录查找
-		filePath = progressFiles[progressIndex]
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			// 尝试在桌面查找
-			home, err := os.UserHomeDir()
-			if err == nil {
-				desktopPath := filepath.Join(home, "Desktop")
-				filePath = filepath.Join(desktopPath, progressFiles[progressIndex])
-			}
-		}
-	}
-
-	// 加载找到的存档文件
-	err := loadSaveFile(filePath)
-	if err != nil {
-		log.Printf("加载存档失败: %v", err)
-		dialog.ShowError(fmt.Errorf("加载存档失败: %v", err), currentWindow)
-	} else {
-		log.Printf("成功加载进度: %s, 文件: %s", progressNames[progressIndex], filePath)
-		// 重新创建并更新UI
-		content := createMainUI()
-		currentWindow.SetContent(content)
-	}
 }
 
 // 加载存档文件
@@ -334,6 +248,10 @@ func loadSaveFile(filePath string) error {
 
 // 创建角色选择下拉框
 func createCharacterTabs(propertyInputs []*propertyInput) *container.AppTabs {
+	// 初始化角色属性输入框映射
+	if characterPropertyInputs == nil {
+		characterPropertyInputs = make(map[int][]*propertyInput)
+	}
 	// 创建标签页容器，使用底部标签样式以便更好地显示角色信息
 	tabs := container.NewAppTabs()
 	// 设置标签页位置在顶部，这是更常见的标签页布局
@@ -358,26 +276,14 @@ func createCharacterTabs(propertyInputs []*propertyInput) *container.AppTabs {
 					inputGrid.Add(input.input)
 				}
 
-				// 创建保存按钮
-				saveButton := widget.NewButton("保存角色数据", func() {
-					if editor == nil {
-						dialog.ShowError(fmt.Errorf("没有加载的存档文件"), nil)
-						return
-					}
-					err := saveCharacterChanges(i, charPropertyInputs)
-					if err != nil {
-						dialog.ShowError(err, nil)
-						return
-					}
-					dialog.ShowInformation("成功", "角色数据保存成功", nil)
-				})
-
 				// 更新角色数据到输入框
 				updateCharacterUI(i, charPropertyInputs)
 
-				// 创建角色标签页，并确保在不同平台上有良好的显示效果
-				buttonHBox := container.NewHBox(layout.NewSpacer(), saveButton, layout.NewSpacer())
-				tabContent := container.NewPadded(container.NewVBox(inputGrid, layout.NewSpacer(), buttonHBox))
+				// 创建角色标签页，移除保存按钮，简化内容结构
+				tabContent := container.NewPadded(container.NewVBox(inputGrid))
+
+				// 保存角色属性输入框到全局映射
+				characterPropertyInputs[i] = charPropertyInputs
 
 				tabs.Append(container.NewTabItem(fmt.Sprintf("%d. %s", i+1, char.Name), tabContent))
 			}
@@ -600,67 +506,39 @@ func createMainUI() *fyne.Container {
 	moneyInput.SetText(moneyValue)
 	moneyInput.SetPlaceHolder("请输入银两数量")
 
-	// 创建银两修改按钮
-	moneyButton := widget.NewButton("修改银两", func() {
-		if editor == nil {
-			dialog.ShowError(fmt.Errorf("没有加载的存档文件"), nil)
-			return
-		}
-		valueStr := moneyInput.Text
-		val, err := strconv.ParseInt(valueStr, 10, 32)
-		if err != nil {
-			dialog.ShowError(fmt.Errorf("银两格式错误: %v", err), nil)
-			return
-		}
-		editor.UpdateMoney(int32(val))
-		dialog.ShowInformation("成功", "银两修改成功", nil)
-	})
-
-	// 保存角色按钮已移至每个标签页内，此处不再需要
-
-	// 创建保存文件按钮
-	saveFileButton := widget.NewButton("保存更改到文件", func() {
-		if currentSave == "" {
-			dialog.ShowError(fmt.Errorf("没有加载的存档文件"), nil)
+	// 创建保存修改按钮
+	saveFileButton := widget.NewButton("保存修改", func() {
+		if currentSave == "" || editor == nil {
+			dialog.ShowError(fmt.Errorf("没有加载的存档文件"), characterWindow)
 			return
 		}
 
-		// 创建备份文件
-		backupPath := currentSave + ".bak"
-		// 复制当前文件到备份
-		sourceFile, err := os.Open(currentSave)
-		if err != nil {
-			dialog.ShowError(fmt.Errorf("打开源文件失败: %v", err), nil)
+		// 修改银两
+		if !updateMoneyValue(moneyInput.Text) {
 			return
 		}
-		defer sourceFile.Close()
 
-		destFile, err := os.Create(backupPath)
-		if err != nil {
-			dialog.ShowError(fmt.Errorf("创建备份文件失败: %v", err), nil)
-			return
-		}
-		defer destFile.Close()
-
-		// 直接复制文件内容
-		buffer := make([]byte, 1024)
-		for {
-			n, err := sourceFile.Read(buffer)
+		// 保存所有角色的数据
+		savedCount := 0
+		for charIndex, inputs := range characterPropertyInputs {
+			err := saveCharacterChanges(charIndex, inputs)
 			if err != nil {
-				break
+				log.Printf("保存角色%d数据失败: %v", charIndex+1, err)
+				continue
 			}
-			destFile.Write(buffer[:n])
+			savedCount++
 		}
+		log.Printf("成功保存%d个角色的数据", savedCount)
 
-		// 保存更改
-		newFilePath := currentSave
-		err = editor.SaveChanges(currentSave, newFilePath)
+		// 保存更改（直接修改源文件）
+		var err error
+		err = editor.SaveChanges(currentSave, currentSave)
 		if err != nil {
-			dialog.ShowError(fmt.Errorf("保存文件失败: %v", err), nil)
+			dialog.ShowError(fmt.Errorf("保存文件失败: %v", err), characterWindow)
 			return
 		}
 
-		dialog.ShowInformation("成功", fmt.Sprintf("更改已保存到: %s\n备份已创建: %s", newFilePath, backupPath), nil)
+		dialog.ShowInformation("成功", "保存修改成功！", characterWindow)
 	})
 
 	// 创建属性网格 - 一行两列布局，输入框水平排列在属性文字后面
@@ -683,7 +561,7 @@ func createMainUI() *fyne.Container {
 	}
 
 	// 创建银两容器
-	moneyContainer := container.NewGridWithColumns(3, moneyLabel, moneyInput, moneyButton)
+	moneyContainer := container.NewGridWithColumns(2, moneyLabel, moneyInput)
 
 	// 创建主容器
 	mainContainer := container.NewVBox(
@@ -705,9 +583,7 @@ func createMainUI() *fyne.Container {
 }
 
 func main() {
-	// 解析命令行参数
-	flag.StringVar(&saveFilePath, "file", "", "存档文件路径")
-	flag.BoolVar(&debugMode, "debug", false, "调试模式")
+	// 解析命令行参数（暂时保留flag包以支持未来扩展）
 	flag.Parse()
 
 	// 打印环境信息用于调试
@@ -715,8 +591,7 @@ func main() {
 	log.Printf("操作系统: macOS")
 	log.Printf("当前工作目录: %s", getCurrentDir())
 
-	// 初始化角色属性映射
-	characterStats = make(map[string]int)
+	// 已移除未使用的characterStats初始化
 
 	// 检查DISPLAY环境变量（对macOS X11很重要）
 	display := os.Getenv("DISPLAY")
@@ -784,4 +659,19 @@ func getCurrentDir() string {
 		return "无法获取当前目录"
 	}
 	return dir
+}
+
+// 更新银两值
+func updateMoneyValue(valueStr string) bool {
+	if editor == nil {
+		dialog.ShowError(fmt.Errorf("没有加载的存档文件"), characterWindow)
+		return false
+	}
+	val, err := strconv.ParseInt(valueStr, 10, 32)
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("银两格式错误: %v", err), characterWindow)
+		return false
+	}
+	editor.UpdateMoney(int32(val))
+	return true
 }
