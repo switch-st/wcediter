@@ -5,6 +5,7 @@ go 1.23.0
 require (
 	fyne.io/fyne/v2 v2.7.1
 	golang.org/x/text v0.28.0
+	gopkg.in/ini.v1 v1.67.0
 )
 
 require (

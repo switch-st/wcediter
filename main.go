@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"wcediter/wcsave"
 
@@ -15,7 +16,9 @@ import (
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
+	"gopkg.in/ini.v1"
 )
 
 var (
@@ -25,15 +28,32 @@ var (
 	currentSave     string
 	currentWindow   fyne.Window
 	characterWindow fyne.Window // 角色属性编辑窗口
-	charIndex       = 0
-	propertyInputs  []*propertyInput
 	// 保存每个角色的属性输入框
 	characterPropertyInputs map[int][]*propertyInput
 
 	// 存档进度相关
 	progressNames = []string{"进度一", "进度二", "进度三", "进度四", "进度五"}
-	progressFiles = []string{"Save1.dat", "Save2.dat", "Save3.dat", "Save4.dat", "Save5.dat"}
+
+	// 配置文件相关
+	configFile  = "./wcediter.ini"
+	fileRecords []FileRecordItem
+	// 固定的默认记录
+	defaultRecords = map[string]string{
+		"原版":    "./Save0.dat",
+		"无名原版":  "./Sald0.dat",
+		"无名简单版": "./Save0.dat",
+		"无名困难版": "./Sav00.dat",
+	}
+	// 保存默认记录的顺序
+	defaultRecordOrder = []string{"原版", "无名原版", "无名简单版", "无名困难版"}
 )
+
+// FileRecordItem 表示选择记录项
+type FileRecordItem struct {
+	Tag       string
+	Path      string
+	IsDefault bool
+}
 
 // 属性输入框结构体
 type propertyInput struct {
@@ -42,11 +62,440 @@ type propertyInput struct {
 	property string
 }
 
+// 自定义文件过滤器，只显示以0.dat结尾的文件
+type zeroDatFileFilter struct{}
+
+// 实现FileFilter接口的Matches方法
+func (f *zeroDatFileFilter) Matches(uri fyne.URI) bool {
+	// 获取文件名
+	fileName := filepath.Base(uri.Path())
+	// 检查文件名是否以0.dat结尾
+	return strings.HasSuffix(fileName, "0.dat")
+}
+
 // 进度选择回调函数
 type progressSelectCallback func(int)
 
+// 文件选择回调函数类型
+type fileSelectCallback func(string, string)
+
+// 选择存档文件的独立方法 - 使用新窗口展示
+func selectSaveFile(parentWindow fyne.Window, onSelect fileSelectCallback) {
+	// 加载选择记录
+	loadFileRecords()
+
+	// 创建一个新的窗口
+	fileWindow := fyneApp.NewWindow("选择存档文件")
+	fileWindow.Resize(fyne.NewSize(800, 600))
+	fileWindow.SetFixedSize(false)
+
+	// 设置窗口关闭时的行为
+	fileWindow.SetOnClosed(func() {
+		// 保存选择记录
+		saveFileRecords()
+		log.Println("文件选择窗口已关闭，配置已保存")
+		// 重新显示主窗口
+		currentWindow.Show()
+	})
+
+	// 创建文件列表容器
+	fileList := widget.NewFileIcon(nil)
+
+	// 创建选中文件信息
+	selectedPath := ""
+	selectedTag := ""
+	pathLabel := widget.NewLabel("选中的文件: ")
+	pathLabel.Wrapping = fyne.TextWrapWord
+	pathLabel.Truncation = fyne.TextTruncateOff
+	tagLabel := widget.NewLabel("文件标签: ")
+	tagLabel.Wrapping = fyne.TextWrapWord
+	tagLabel.Truncation = fyne.TextTruncateOff
+
+	// 创建确认按钮
+	confirmButton := widget.NewButton("确认选择", func() {
+		if selectedPath != "" {
+			// 保存选择记录
+			saveFileRecords()
+			log.Println("确认选择，配置已保存")
+			// 调用回调函数，传递选中的标签和文件路径
+			if onSelect != nil {
+				onSelect(selectedTag, selectedPath)
+			}
+			// 关闭文件选择窗口
+			fileWindow.Close()
+		}
+	})
+	confirmButton.Disable()
+
+	// 声明recordList变量
+	var recordList *widget.List
+
+	// 创建文件选择区域
+	filePicker := widget.NewButton("浏览文件系统", func() {
+		// 创建文件选择对话框
+		fileDialog := dialog.NewFileOpen(
+			func(reader fyne.URIReadCloser, err error) {
+				if err != nil {
+					dialog.ShowError(err, fileWindow)
+					return
+				}
+				if reader != nil {
+					filePath := reader.URI().Path()
+					// 检查文件是否以0.dat结尾
+					if filepath.Ext(filePath) == ".dat" && strings.HasSuffix(filePath[:len(filePath)-4], "0") {
+						log.Printf("用户选择了存档文件：%s", filePath)
+						// 更新文件图标显示
+						fileList.SetURI(reader.URI())
+
+						// 生成默认标签（文件名）
+						tag := getFileName(filePath)
+						baseTag := tag
+
+						// 检查是否已存在相同路径的记录
+						found := false
+						recordIndex := -1
+						for i, item := range fileRecords {
+							if item.Path == filePath {
+								found = true
+								recordIndex = i
+								// 更新选中信息
+								selectedTag = item.Tag
+								selectedPath = item.Path
+								break
+							}
+						}
+
+						if !found {
+							// 确保标签唯一
+							uniqueTag := tag
+							localCounter := 1
+
+							// 检查标签是否已被使用，如果是则添加数字后缀
+							for {
+								isUnique := true
+								for _, item := range fileRecords {
+									if item.Tag == uniqueTag {
+										isUnique = false
+										break
+									}
+								}
+
+								if isUnique {
+									break
+								}
+
+								// 生成新的标签
+								uniqueTag = fmt.Sprintf("%s(%d)", baseTag, localCounter)
+								localCounter++
+							}
+
+							// 添加新记录
+							newItem := FileRecordItem{
+								Tag:       uniqueTag,
+								Path:      filePath,
+								IsDefault: false,
+							}
+							fileRecords = append(fileRecords, newItem)
+							// 更新选中信息
+							selectedTag = uniqueTag
+							selectedPath = filePath
+							// 刷新记录列表，使新记录显示在左侧
+							if recordList != nil {
+								recordList.Refresh()
+								// 选中新添加的记录
+								recordList.Select(len(fileRecords) - 1)
+							}
+						} else {
+							// 选中已存在的记录
+							if recordList != nil && recordIndex != -1 {
+								recordList.Select(recordIndex)
+							}
+						}
+
+						// 更新右侧显示
+						tagLabel.SetText("文件标签: " + selectedTag)
+						pathLabel.SetText("选中的文件: " + selectedPath)
+						confirmButton.Enable()
+					} else {
+						dialog.ShowInformation("提示", "请选择以0.dat结尾的存档文件", fileWindow)
+					}
+					reader.Close()
+				}
+			},
+			fileWindow,
+		)
+
+		// 设置默认目录为程序当前工作目录
+		currentDir, err := os.Getwd()
+		if err != nil {
+			log.Printf("获取当前工作目录失败: %v", err)
+		} else {
+			log.Printf("当前工作目录: %s", currentDir)
+			// 使用storage包创建文件URI
+			uri := storage.NewFileURI(currentDir)
+			// 获取可列出内容的URI（目录）
+			if lister, err := storage.ListerForURI(uri); err == nil {
+				// 设置文件选择器的默认位置
+				fileDialog.SetLocation(lister)
+			}
+		}
+		// 创建自定义文件过滤器实例
+		fileFilter := &zeroDatFileFilter{}
+		// 设置文件过滤器
+		fileDialog.SetFilter(fileFilter)
+		// 设置文件对话框的大小与父窗口相同
+		fileDialog.Resize(fileWindow.Canvas().Size())
+		// 设置文件对话框默认以列表形式展示
+		fileDialog.SetView(dialog.ListView)
+		fileDialog.Show()
+	})
+
+	// 创建记录列表
+	recordList = widget.NewList(
+		func() int {
+			return len(fileRecords)
+		},
+		func() fyne.CanvasObject {
+			// 创建记录项的UI组件
+			tagEntry := widget.NewEntry()
+			pathLabel := widget.NewLabel("")
+			pathLabel.Wrapping = fyne.TextWrapOff
+			pathLabel.Truncation = fyne.TextTruncateOff
+			deleteBtn := widget.NewButton("删除", func() {})
+
+			// 创建Grid布局
+			grid := container.NewGridWithColumns(4,
+				container.NewStack(tagEntry),  // 标签列
+				container.NewStack(pathLabel), // 路径列
+				layout.NewSpacer(),            // 占位符
+				deleteBtn,                     // 删除按钮
+			)
+
+			// 创建一个带有边框的容器，用于区分不同类型的记录
+			return container.NewBorder(nil, nil, nil, nil, grid)
+		},
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			// 获取记录项
+			item := fileRecords[i]
+
+			// 获取Border容器
+			borderContainer := o.(*fyne.Container)
+			// 获取Grid容器（只有中间组件，所以是Objects[0]）
+			grid := borderContainer.Objects[0].(*fyne.Container)
+			// 获取标签输入框（嵌套在container.NewStack中）
+			tagContainer := grid.Objects[0].(*fyne.Container)
+			tagEntry := tagContainer.Objects[0].(*widget.Entry)
+			// 获取路径标签（嵌套在container.NewStack中）
+			pathContainer := grid.Objects[1].(*fyne.Container)
+			pathLabel := pathContainer.Objects[0].(*widget.Label)
+			// 获取删除按钮
+			deleteBtn := grid.Objects[3].(*widget.Button)
+
+			// 设置标签
+			tagEntry.SetText(item.Tag)
+
+			// 设置路径（转换为相对路径）
+			relPath := getRelativePath(item.Path)
+			pathLabel.SetText(relPath)
+
+			// 根据是否为默认记录设置样式
+			if item.IsDefault {
+				// 默认记录，正常样式显示，不可编辑
+				tagEntry.Disable()
+				tagEntry.TextStyle = fyne.TextStyle{}
+				pathLabel.TextStyle = fyne.TextStyle{}
+				deleteBtn.Disable()
+			} else {
+				// 普通记录，正常显示，可编辑
+				tagEntry.Enable()
+				tagEntry.TextStyle = fyne.TextStyle{}
+				pathLabel.TextStyle = fyne.TextStyle{}
+				deleteBtn.Enable()
+			}
+
+			// 设置标签编辑事件
+			tagEntry.OnChanged = func(s string) {
+				// 更新记录标签
+				fileRecords[i].Tag = s
+			}
+
+			// 保存当前记录的路径，用于后续删除操作
+			currentPath := item.Path
+
+			// 设置删除按钮事件
+			deleteBtn.OnTapped = func() {
+				// 动态获取当前标签值
+				var currentTag string
+				for _, record := range fileRecords {
+					if record.Path == currentPath {
+						currentTag = record.Tag
+						break
+					}
+				}
+
+				// 创建确认对话框
+				confirmDialog := dialog.NewConfirm(
+					"确认删除",
+					fmt.Sprintf("确定要删除记录 '%s' 吗？", currentTag),
+					func(confirmed bool) {
+						if confirmed {
+							// 查找要删除的记录索引
+							for idx, record := range fileRecords {
+								if record.Path == currentPath && !record.IsDefault {
+									// 删除记录
+									fileRecords = append(fileRecords[:idx], fileRecords[idx+1:]...)
+									// 刷新记录列表
+									recordList.Refresh()
+									break
+								}
+							}
+						}
+					},
+					fileWindow,
+				)
+				confirmDialog.Show()
+			}
+		},
+	)
+
+	// 设置记录列表的选中事件
+	recordList.OnSelected = func(id widget.ListItemID) {
+		// 选中该记录
+		selectedTag = fileRecords[id].Tag
+		selectedPath = fileRecords[id].Path
+		// 更新右侧显示
+		tagLabel.SetText("文件标签: " + selectedTag)
+		pathLabel.SetText("选中的文件: " + selectedPath)
+		confirmButton.Enable()
+	}
+
+	// 设置记录列表的取消选中事件
+	recordList.OnUnselected = func(id widget.ListItemID) {
+		// 取消选中时清空显示
+		tagLabel.SetText("文件标签: ")
+		pathLabel.SetText("选中的文件: ")
+		confirmButton.Disable()
+	}
+
+	// 创建右侧面板
+	rightPanel := container.NewVBox(
+		widget.NewLabelWithStyle("请选择风云存档文件（以0.dat结尾）", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		layout.NewSpacer(),
+		container.NewCenter(fileList),
+		tagLabel,
+		pathLabel,
+		layout.NewSpacer(),
+		container.NewHBox(
+			layout.NewSpacer(),
+			filePicker,
+			confirmButton,
+			widget.NewButton("取消", func() {
+				// 保存选择记录
+				saveFileRecords()
+				log.Println("取消选择，配置已保存")
+				// 执行onSelect回调函数，传递空的路径
+				if onSelect != nil {
+					onSelect("", "")
+				}
+				// 关闭窗口
+				fileWindow.Close()
+			}),
+			layout.NewSpacer(),
+		),
+	)
+
+	// 创建左侧面板，确保占据整个左边窗口
+	leftPanel := container.NewBorder(
+		widget.NewLabelWithStyle("选择记录", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		nil,
+		nil,
+		nil,
+		recordList,
+	)
+
+	// 创建主布局（左侧记录列表，右侧文件选择）
+	mainLayout := container.NewHSplit(
+		leftPanel,
+		rightPanel,
+	)
+	mainLayout.SetOffset(0.5) // 设置左侧宽度为50%
+
+	// 设置初始窗口内容
+	fileWindow.SetContent(mainLayout)
+
+	// 显示窗口
+	fileWindow.CenterOnScreen()
+	fileWindow.Show()
+}
+
 // 创建进度选择界面
 func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
+	log.Println("创建进度选择界面，包含文件选择功能")
+	// 创建文件选择相关组件
+	fileLabel := widget.NewLabel("请选择存档文件：")
+
+	// 加载选择记录
+	loadFileRecords()
+
+	// 准备选择记录的标签和路径映射
+	tagPathMap := make(map[string]string)
+	tags := []string{}
+
+	// 如果没有记录，使用默认记录
+	if len(fileRecords) == 0 {
+		log.Println("没有配置文件，使用默认记录")
+		// 使用默认记录
+		for _, tag := range defaultRecordOrder {
+			path := defaultRecords[tag]
+			tagPathMap[tag] = path
+			tags = append(tags, tag)
+		}
+	} else {
+		// 使用配置文件中的记录
+		for _, item := range fileRecords {
+			tagPathMap[item.Tag] = item.Path
+			tags = append(tags, item.Tag)
+		}
+	}
+
+	// 创建选择框
+	var selectedTag string
+	if len(tags) > 0 {
+		selectedTag = tags[0]
+	}
+	fileSelect := widget.NewSelect(tags, func(tag string) {
+		selectedTag = tag
+	})
+	if len(tags) > 0 {
+		fileSelect.SetSelected(selectedTag)
+	}
+
+	// 创建浏览按钮，用于添加新记录
+	browseButton := widget.NewButton("浏览...", func() {
+		// 隐藏主窗口
+		currentWindow.Hide()
+		selectSaveFile(currentWindow, func(selectedTagFromDialog, filePath string) {
+			// 重新加载记录
+			loadFileRecords()
+			// 重新准备选择记录的标签和路径映射
+			tagPathMap = make(map[string]string)
+			tags = []string{}
+			for _, item := range fileRecords {
+				tagPathMap[item.Tag] = item.Path
+				tags = append(tags, item.Tag)
+			}
+			// 更新选择框
+			fileSelect.Options = tags
+			// 只有当selectedTagFromDialog不为空时，才更新选中的项目
+			if selectedTagFromDialog != "" {
+				// 选中用户刚刚选择的文件
+				selectedTag = selectedTagFromDialog
+				fileSelect.SetSelected(selectedTag)
+			}
+			fileSelect.Refresh()
+		})
+	})
+
 	// 创建标题
 	title := widget.NewLabel("请选择欲修改的进度名：")
 	title.Alignment = fyne.TextAlignCenter
@@ -64,11 +513,26 @@ func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 
 	// 创建确定按钮
 	confirmButton := widget.NewButton("确定", func() {
+		// 检查是否选择了文件
+		if selectedTag == "" {
+			dialog.ShowInformation("提示", "请先选择一个存档文件", currentWindow)
+			return
+		}
+
+		// 获取选中的文件路径
+		filePath := tagPathMap[selectedTag]
+		if filePath == "" {
+			dialog.ShowInformation("提示", "请先选择一个存档文件", currentWindow)
+			return
+		}
+
 		selected := radioGroup.Selected
 		if selected != "" {
 			// 找到选中的进度索引
 			for i, name := range progressNames {
 				if name == selected {
+					// 保存选择的文件路径
+					currentSave = filePath
 					onSelect(i)
 					return
 				}
@@ -106,8 +570,15 @@ func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 	authorLabel.Alignment = fyne.TextAlignCenter
 	authorLabel.TextStyle = fyne.TextStyle{Italic: true}
 
+	// 创建文件选择区域的容器
+	fileSelectionContainer := container.NewBorder(
+		nil, nil, fileLabel, browseButton,
+		fileSelect,
+	)
+
 	// 整个内容容器
 	content := container.NewVBox(
+		fileSelectionContainer,
 		title,
 		layout.NewSpacer(),
 		radioCenterContainer,
@@ -137,30 +608,28 @@ func createPropertyInput(property, labelText string, initialValue string) *prope
 
 // 加载进度文件并打开角色属性窗口
 func loadProgressAndOpenCharacterUI(progressIndex int, progressWindow fyne.Window) {
-	if progressIndex < 0 || progressIndex >= len(progressFiles) {
+	if progressIndex < 0 || progressIndex >= len(progressNames) {
 		log.Printf("无效的进度索引: %d", progressIndex)
 		dialog.ShowError(fmt.Errorf("无效的进度索引"), progressWindow)
 		return
 	}
 
-	// 构建存档文件路径
-	// 首先尝试在data目录中查找
-	dataDir := filepath.Join(getCurrentDir(), "data")
-	filePath := filepath.Join(dataDir, progressFiles[progressIndex])
-
-	// 如果data目录中的文件不存在，尝试其他可能的路径
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		// 尝试直接在当前目录查找
-		filePath = progressFiles[progressIndex]
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			// 尝试在桌面查找
-			home, err := os.UserHomeDir()
-			if err == nil {
-				desktopPath := filepath.Join(home, "Desktop")
-				filePath = filepath.Join(desktopPath, progressFiles[progressIndex])
-			}
-		}
+	// 如果没有选择基础存档文件，显示错误
+	if currentSave == "" {
+		log.Printf("错误: 没有选择存档文件")
+		dialog.ShowError(fmt.Errorf("请先选择存档文件"), progressWindow)
+		return
 	}
+
+	// 根据用户选择的基础文件路径和进度索引生成对应的存档文件路径
+	// 例如: 如果基础文件是 "xxx0.dat"，进度1对应 "xxx1.dat"
+	ext := filepath.Ext(currentSave)
+	baseName := currentSave[:len(currentSave)-len(ext)]
+	// 替换末尾的0为对应的进度索引+1
+	baseName = baseName[:len(baseName)-1] + strconv.Itoa(progressIndex+1)
+	filePath := baseName + ext
+
+	log.Printf("准备加载进度 %d 的文件: %s", progressIndex+1, filePath)
 
 	// 加载找到的存档文件
 	err := loadSaveFile(filePath)
@@ -192,15 +661,11 @@ func openCharacterWindow(progressIndex int) {
 	// 设置窗口关闭时的行为
 	characterWindow.SetCloseIntercept(func() {
 		log.Println("角色属性窗口关闭中...")
-		// 保存当前编辑的内容
-		if len(propertyInputs) > 0 && charIndex >= 0 {
-			saveCharacterChanges(charIndex, propertyInputs)
-		}
-		// 关闭窗口并重新显示进度选择窗口
-		characterWindow.Close()
 		// 重新显示进度选择窗口
 		log.Println("重新显示进度选择窗口...")
 		currentWindow.Show()
+		// 关闭窗口
+		characterWindow.Close()
 	})
 
 	// 创建角色属性UI内容
@@ -217,17 +682,10 @@ func openCharacterWindow(progressIndex int) {
 
 // 加载存档文件
 func loadSaveFile(filePath string) error {
-	// 如果文件不存在，尝试使用默认路径
+	// 检查文件是否存在
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		// 检查是否有默认存档文件
-		defaultPath := filepath.Join(os.Getenv("HOME"), "Desktop", "风云存档.dat")
-		if _, err := os.Stat(defaultPath); os.IsNotExist(err) {
-			log.Printf("警告: 未找到存档文件: %s 和 %s", filePath, defaultPath)
-			// 返回nil，允许程序继续运行
-			return nil
-		}
-		filePath = defaultPath
-		log.Printf("使用默认存档文件: %s", filePath)
+		log.Printf("错误: 存档文件不存在: %s", filePath)
+		return fmt.Errorf("存档文件不存在: %s\n请确认文件路径是否正确", filePath)
 	}
 
 	// 初始化编辑器
@@ -465,22 +923,13 @@ func createMainUI() *fyne.Container {
 		editor = wcsave.NewSaveEditor()
 	}
 
-	// 显示提示信息
-	statusLabel := widget.NewLabel("")
-	if currentSave == "" {
-		statusLabel.SetText("提示: 请先准备风云存档文件并通过命令行参数指定")
-		statusLabel.TextStyle = fyne.TextStyle{Italic: true}
-	} else {
-		statusLabel.SetText(fmt.Sprintf("已加载存档: %s", currentSave))
-	}
-
 	// 创建属性输入框模板
 	propertyInputs := []*propertyInput{
 		createPropertyInput("CurrentExp", "当前经验值:", "0"),
 		createPropertyInput("NextLevelExp", "升级经验值:", "0"),
 		createPropertyInput("CurrentHP", "当前生命值:", "0"),
-		createPropertyInput("CurrentMP", "当前内力值:", "0"),
 		createPropertyInput("MaxHP", "最大生命值:", "0"),
+		createPropertyInput("CurrentMP", "当前内力值:", "0"),
 		createPropertyInput("MaxMP", "最大内力值:", "0"),
 		createPropertyInput("Strength", "力量:", "0"),
 		createPropertyInput("Reaction", "反应:", "0"),
@@ -541,27 +990,25 @@ func createMainUI() *fyne.Container {
 		dialog.ShowInformation("成功", "保存修改成功！", characterWindow)
 	})
 
-	// 创建属性网格 - 一行两列布局，输入框水平排列在属性文字后面
-	propertyGrid := container.NewGridWithColumns(2)
-	// 将每个属性（标签+输入框）组合成一个水平容器，然后添加到网格中
-	for _, input := range propertyInputs {
-		// 为输入框设置固定宽度
-		input.input.Wrapping = fyne.TextWrapOff
-		input.input.Resize(fyne.NewSize(200, 30))
-
-		// 为每个属性创建一个水平容器，使用layout.NewSpacer()让输入框扩展
-		propertyItem := container.NewHBox(
-			input.label,
-			layout.NewSpacer(), // 添加这个可以让输入框占据更多空间
-			input.input,
-		)
-		// 为整个属性项设置最小宽度，确保输入框能够显示完整
-		propertyItem.Resize(fyne.NewSize(300, 30))
-		propertyGrid.Add(propertyItem)
-	}
+	// 创建取消按钮
+	cancelButton := widget.NewButton("取消", func() {
+		log.Println("用户点击了取消按钮")
+		// 直接显示主窗口
+		currentWindow.Show()
+		// 关闭角色属性窗口，不保存任何修改
+		characterWindow.Close()
+	})
 
 	// 创建银两容器
 	moneyContainer := container.NewGridWithColumns(2, moneyLabel, moneyInput)
+
+	// 创建按钮容器，包含保存和取消按钮
+	buttonContainer := container.NewHBox(
+		layout.NewSpacer(),
+		saveFileButton,
+		cancelButton,
+		layout.NewSpacer(),
+	)
 
 	// 创建主容器
 	mainContainer := container.NewVBox(
@@ -573,8 +1020,8 @@ func createMainUI() *fyne.Container {
 		widget.NewSeparator(),
 		moneyContainer,
 		layout.NewSpacer(),
-		// 只保留保存文件按钮，角色保存按钮已移至每个标签页内
-		saveFileButton,
+		// 添加按钮容器，包含保存和取消按钮
+		buttonContainer,
 	)
 
 	// 标签页已在createCharacterTabs中初始化了所有角色的数据
@@ -602,10 +1049,10 @@ func main() {
 		log.Printf("DISPLAY环境变量: %s", display)
 	}
 
-	// 创建Fyne应用
+	// 创建Fyne应用，使用NewWithID提供唯一标识符以避免Preferences API错误
 	log.Println("正在创建Fyne应用实例...")
 	// 为macOS添加显示配置选项
-	fyneApp = app.New()
+	fyneApp = app.NewWithID("wang.switch.wcediter")
 	log.Println("Fyne应用实例创建成功")
 
 	// 创建窗口
@@ -661,6 +1108,91 @@ func getCurrentDir() string {
 	return dir
 }
 
+// initConfigFile 初始化配置文件
+func initConfigFile() {
+	// 检查配置文件是否存在
+	if _, err := os.Stat(configFile); os.IsNotExist(err) {
+		// 创建配置文件
+		cfg := ini.Empty()
+
+		// 添加默认记录
+		defaultSection, err := cfg.NewSection("default_Records")
+		if err != nil {
+			log.Printf("创建default_Records节失败: %v", err)
+			return
+		}
+
+		// 添加代码中固定的默认记录
+		for _, tag := range defaultRecordOrder {
+			path := defaultRecords[tag]
+			_, err := defaultSection.NewKey(tag, path)
+			if err != nil {
+				log.Printf("添加默认记录失败: %v", err)
+			}
+		}
+
+		// 创建普通记录节
+		_, err = cfg.NewSection("Records")
+		if err != nil {
+			log.Printf("创建Records节失败: %v", err)
+			return
+		}
+
+		// 保存配置文件
+		err = cfg.SaveTo(configFile)
+		if err != nil {
+			log.Printf("保存配置文件失败: %v", err)
+			return
+		}
+
+		log.Printf("创建配置文件成功: %s", configFile)
+	} else {
+		// 检查配置文件是否为空
+		info, err := os.Stat(configFile)
+		if err != nil {
+			log.Printf("获取配置文件信息失败: %v", err)
+			return
+		}
+
+		if info.Size() == 0 {
+			// 配置文件为空，生成默认内容
+			cfg := ini.Empty()
+
+			// 添加默认记录
+			defaultSection, err := cfg.NewSection("default_Records")
+			if err != nil {
+				log.Printf("创建default_Records节失败: %v", err)
+				return
+			}
+
+			// 添加代码中固定的默认记录
+			for _, tag := range defaultRecordOrder {
+				path := defaultRecords[tag]
+				_, err := defaultSection.NewKey(tag, path)
+				if err != nil {
+					log.Printf("添加默认记录失败: %v", err)
+				}
+			}
+
+			// 创建普通记录节
+			_, err = cfg.NewSection("Records")
+			if err != nil {
+				log.Printf("创建Records节失败: %v", err)
+				return
+			}
+
+			// 保存配置文件
+			err = cfg.SaveTo(configFile)
+			if err != nil {
+				log.Printf("保存配置文件失败: %v", err)
+				return
+			}
+
+			log.Printf("配置文件为空，生成默认内容: %s", configFile)
+		}
+	}
+}
+
 // 更新银两值
 func updateMoneyValue(valueStr string) bool {
 	if editor == nil {
@@ -674,4 +1206,146 @@ func updateMoneyValue(valueStr string) bool {
 	}
 	editor.UpdateMoney(int32(val))
 	return true
+}
+
+// loadFileRecords 加载选择记录
+func loadFileRecords() {
+	// 确保配置文件存在
+	initConfigFile()
+
+	// 清空现有记录
+	fileRecords = []FileRecordItem{}
+
+	// 读取配置文件
+	cfg, err := ini.Load(configFile)
+	if err != nil {
+		log.Printf("读取配置文件失败: %v", err)
+		return
+	}
+
+	// 加载默认记录
+	defaultSection := cfg.Section("default_Records")
+	for _, key := range defaultSection.Keys() {
+		item := FileRecordItem{
+			Tag:       key.Name(),
+			Path:      key.String(),
+			IsDefault: true,
+		}
+		fileRecords = append(fileRecords, item)
+	}
+
+	// 加载普通记录
+	recordsSection := cfg.Section("Records")
+	for _, key := range recordsSection.Keys() {
+		item := FileRecordItem{
+			Tag:       key.Name(),
+			Path:      key.String(),
+			IsDefault: false,
+		}
+		fileRecords = append(fileRecords, item)
+	}
+
+	log.Printf("加载选择记录成功，共 %d 条记录", len(fileRecords))
+}
+
+// saveFileRecords 保存选择记录
+func saveFileRecords() {
+	// 创建新的配置文件
+	cfg := ini.Empty()
+
+	// 添加默认记录节
+	defaultSection, err := cfg.NewSection("default_Records")
+	if err != nil {
+		log.Printf("创建default_Records节失败: %v", err)
+		return
+	}
+
+	// 添加普通记录节
+	recordsSection, err := cfg.NewSection("Records")
+	if err != nil {
+		log.Printf("创建Records节失败: %v", err)
+		return
+	}
+
+	// 遍历所有记录，根据类型写入不同的节
+	// 创建一个map来跟踪已使用的Tag
+	usedTags := make(map[string]bool)
+	for _, item := range fileRecords {
+		// 检查Tag是否已被使用，如果是则添加数字后缀
+		tag := item.Tag
+		baseTag := tag
+		counter := 1
+
+		// 生成唯一的Tag
+		for usedTags[tag] {
+			tag = fmt.Sprintf("%s(%d)", baseTag, counter)
+			counter++
+		}
+
+		// 根据记录类型写入不同的节
+		if item.IsDefault {
+			// 默认记录写入default_Records节
+			_, err := defaultSection.NewKey(tag, item.Path)
+			if err != nil {
+				log.Printf("添加默认记录失败: %v", err)
+			} else {
+				// 标记Tag为已使用
+				usedTags[tag] = true
+			}
+		} else {
+			// 普通记录写入Records节
+			_, err := recordsSection.NewKey(tag, item.Path)
+			if err != nil {
+				log.Printf("添加普通记录失败: %v", err)
+			} else {
+				// 标记Tag为已使用
+				usedTags[tag] = true
+			}
+		}
+	}
+
+	// 保存配置文件
+	err = cfg.SaveTo(configFile)
+	if err != nil {
+		log.Printf("保存配置文件失败: %v", err)
+		return
+	}
+
+	log.Printf("保存配置文件成功: %s", configFile)
+}
+
+// getRelativePath 将绝对路径转换为相对路径（如果在当前目录下）
+func getRelativePath(absPath string) string {
+	// 获取当前工作目录
+	currentDir, err := os.Getwd()
+	if err != nil {
+		log.Printf("获取当前工作目录失败: %v", err)
+		return absPath
+	}
+
+	// 转换为绝对路径
+	absPath, err = filepath.Abs(absPath)
+	if err != nil {
+		log.Printf("转换为绝对路径失败: %v", err)
+		return absPath
+	}
+
+	// 检查是否在当前目录下
+	relPath, err := filepath.Rel(currentDir, absPath)
+	if err != nil {
+		log.Printf("转换为相对路径失败: %v", err)
+		return absPath
+	}
+
+	// 如果相对路径以".."开头，说明不在当前目录下，返回绝对路径
+	if strings.HasPrefix(relPath, "..") {
+		return absPath
+	}
+
+	return relPath
+}
+
+// getFileName 获取文件名（不含路径）
+func getFileName(filePath string) string {
+	return filepath.Base(filePath)
 }

@@ -257,8 +257,8 @@ func ReadCharacters(file *os.File) ([]models.CharacterInfo, error) {
 	// 存储所有角色信息
 	characters := make([]models.CharacterInfo, 0)
 
-	// 循环读取多个角色数据
-	for {
+	// 循环读取多个角色数据，最多读取5个角色
+	for i := 0; i < 5; i++ {
 		// 调用函数读取角色属性
 		characterData, rawBytes, utf8Name, position, continueReading, err := readCharacterProperties(file)
 		if err != nil {

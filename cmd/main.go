@@ -22,7 +22,7 @@ func main() {
 	// 使用命令行参数
 	sourceFilePath := *sourceFilePathFlag
 	destFilePath := *destFilePathFlag
-	
+
 	// 检查输入文件是否设置
 	if sourceFilePath == "" {
 		fmt.Println("错误: 必须使用 -input 参数指定输入存档文件路径")
@@ -93,8 +93,8 @@ func main() {
 		fmt.Printf("当前经验值: %d\n", char.Data.CurrentExp)
 		fmt.Printf("升级经验值: %d\n", char.Data.NextLevelExp)
 		fmt.Printf("当前生命值: %d\n", char.Data.CurrentHP)
-		fmt.Printf("当前内力值: %d\n", char.Data.CurrentMP)
 		fmt.Printf("最大生命值: %d\n", char.Data.MaxHP)
+		fmt.Printf("当前内力值: %d\n", char.Data.CurrentMP)
 		fmt.Printf("最大内力值: %d\n", char.Data.MaxMP)
 		fmt.Printf("力量: %d\n", char.Data.Strength)
 		fmt.Printf("反应: %d\n", char.Data.Reaction)

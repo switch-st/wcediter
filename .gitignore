@@ -219,6 +219,7 @@ $RECYCLE.BIN/
 
 ### Custom ###
 .trae
-data
 bk_data
 wcediter
+wcediter.ini
+fyne-cross
