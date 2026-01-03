@@ -50,3 +50,10 @@ type MoneyInfo struct {
 	RawBytes []byte
 	Position int64
 }
+
+// ProgressInfo 进度信息结构体
+type ProgressInfo struct {
+	ProgressID   int    // 进度编号
+	LocationID   int    // 位置编号
+	LocationName string // 位置名称
+}

@@ -4,12 +4,32 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"strings"
 
+	"wcediter/assets"
 	"wcediter/wcsave/models"
 	"wcediter/wcsave/utils"
 
 	"golang.org/x/text/encoding/traditionalchinese"
 )
+
+// locationNames 存储位置名称数组，在 init 函数中初始化
+var locationNames []string
+
+// init 初始化位置名称数组
+func init() {
+	// 将 LocationNameBytes 解析为字符串数组
+	content := string(assets.LocationNameBytes)
+	locationNames = strings.Split(content, "\n")
+}
+
+// GetLocationNameByID 通过位置ID获取位置名称
+func GetLocationNameByID(locationID int) string {
+	if locationID >= 0 && locationID < len(locationNames) {
+		return locationNames[locationID]
+	}
+	return "未知位置"
+}
 
 // readMoneyData 读取银两数据的函数
 func ReadMoneyData(file *os.File, position int64) (models.MoneyInfo, error) {
@@ -285,4 +305,68 @@ func ReadCharacters(file *os.File) ([]models.CharacterInfo, error) {
 	}
 
 	return characters, nil
+}
+
+// ReadProgress 从 WC.cfg 文件中读取进度信息
+func ReadProgress(file *os.File) ([]models.ProgressInfo, error) {
+	// 检查文件大小
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("无法获取文件信息: %v", err)
+	}
+
+	// 需要读取到至少第56+20=76字节（56字节起始位置 + 5个int*4字节）
+	minSize := int64(76)
+	if fileInfo.Size() < minSize {
+		return nil, fmt.Errorf("文件大小不足以读取进度数据")
+	}
+
+	// 读取进度编号：从第36个字节开始，读取5个int（每个4字节）
+	progressIDs := make([]int, 5)
+	_, err = file.Seek(36, 0)
+	if err != nil {
+		return nil, fmt.Errorf("无法定位到进度编号位置: %v", err)
+	}
+
+	uint32Converter := func(b []byte) (int32, error) {
+		return int32(binary.LittleEndian.Uint32(b)), nil
+	}
+
+	for i := 0; i < 5; i++ {
+		val, _, err := utils.ReadAndConvert(file, 4, uint32Converter)
+		if err != nil {
+			return nil, fmt.Errorf("读取进度编号[%d]失败: %v", i, err)
+		}
+		progressIDs[i] = int(val)
+	}
+
+	// 读取位置编号：从第56个字节开始，读取5个int（每个4字节）
+	locationIDs := make([]int, 5)
+	_, err = file.Seek(56, 0)
+	if err != nil {
+		return nil, fmt.Errorf("无法定位到位置编号位置: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		val, _, err := utils.ReadAndConvert(file, 4, uint32Converter)
+		if err != nil {
+			return nil, fmt.Errorf("读取位置编号[%d]失败: %v", i, err)
+		}
+		locationIDs[i] = int(val)
+	}
+
+	// 构建结果数组
+	result := make([]models.ProgressInfo, 5)
+	for i := 0; i < 5; i++ {
+		// 通过位置ID获取位置名称
+		locationName := GetLocationNameByID(locationIDs[i])
+
+		result[i] = models.ProgressInfo{
+			ProgressID:   progressIDs[i],
+			LocationID:   locationIDs[i],
+			LocationName: locationName,
+		}
+	}
+
+	return result, nil
 }

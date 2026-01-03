@@ -10,14 +10,16 @@ import (
 
 // SaveEditor 是存档编辑器的主要接口
 type SaveEditor struct {
-	Characters []models.CharacterInfo
-	MoneyInfo  models.MoneyInfo
+	Characters    []models.CharacterInfo
+	MoneyInfo     models.MoneyInfo
+	ProgressInfos []models.ProgressInfo
 }
 
 // NewSaveEditor 创建一个新的存档编辑器实例
 func NewSaveEditor() *SaveEditor {
 	return &SaveEditor{
-		Characters: make([]models.CharacterInfo, 0),
+		Characters:    make([]models.CharacterInfo, 0),
+		ProgressInfos: make([]models.ProgressInfo, 0),
 	}
 }
 
@@ -77,4 +79,20 @@ func (e *SaveEditor) UpdateCharacter(index int, data models.CharacterData) bool 
 		return true
 	}
 	return false
+}
+
+// ReadProgress 从 WC.cfg 文件中读取进度信息
+func (e *SaveEditor) ReadProgress(cfgFilePath string) ([]models.ProgressInfo, error) {
+	file, err := os.Open(cfgFilePath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	progressInfos, err := reader.ReadProgress(file)
+	if err != nil {
+		return nil, err
+	}
+	e.ProgressInfos = progressInfos
+	return e.ProgressInfos, nil
 }

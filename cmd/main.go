@@ -17,16 +17,46 @@ func main() {
 	// 命令行参数解析
 	sourceFilePathFlag := flag.String("input", "", "输入存档文件路径")
 	destFilePathFlag := flag.String("output", "", "输出存档文件路径")
+	progressFilePathFlag := flag.String("progress", "", "读取进度信息（WC.cfg 文件路径）")
 	flag.Parse()
 
 	// 使用命令行参数
 	sourceFilePath := *sourceFilePathFlag
 	destFilePath := *destFilePathFlag
+	progressFilePath := *progressFilePathFlag
+
+	// 如果提供了 -progress 参数，读取并显示进度信息
+	if progressFilePath != "" {
+		editor := wcsave.NewSaveEditor()
+		progressInfos, err := editor.ReadProgress(progressFilePath)
+		if err != nil {
+			fmt.Printf("读取进度文件失败: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("===================================")
+		fmt.Println("游戏进度信息")
+		fmt.Println("===================================")
+		fmt.Printf("进度文件: %s\n\n", progressFilePath)
+		fmt.Println("=== 进度列表 ===")
+
+		for i, info := range progressInfos {
+			fmt.Printf("\n进度 %d:\n", i+1)
+			fmt.Printf("  进度编号: %d\n", info.ProgressID)
+			fmt.Printf("  位置编号: %d\n", info.LocationID)
+			fmt.Printf("  位置名称: %s\n", info.LocationName)
+		}
+
+		fmt.Println("\n操作完成！")
+		return
+	}
 
 	// 检查输入文件是否设置
 	if sourceFilePath == "" {
-		fmt.Println("错误: 必须使用 -input 参数指定输入存档文件路径")
-		fmt.Println("使用示例: go run main.go -input Save.dat [-output Save_modified.dat]")
+		fmt.Println("错误: 必须使用 -input 参数指定输入存档文件路径，或使用 -progress 参数读取进度信息")
+		fmt.Println("使用示例:")
+		fmt.Println("  读取存档: go run main.go -input Save.dat [-output Save_modified.dat]")
+		fmt.Println("  读取进度: go run main.go -progress WC.cfg")
 		os.Exit(1)
 	}
 
@@ -42,10 +72,13 @@ func main() {
 	}
 	fmt.Println()
 	fmt.Println("使用说明:")
-	fmt.Println("  -input <文件路径>  指定输入存档文件路径 (必需)")
+	fmt.Println("  -input <文件路径>  指定输入存档文件路径 (必需，除非使用 -progress)")
 	fmt.Println("  -output <文件路径> 指定输出存档文件路径 (可选)")
+	fmt.Println("  -progress <文件路径> 读取进度信息 (WC.cfg 文件路径)")
 	fmt.Println("例如:")
-	fmt.Println("  go run main.go -input Save.dat -output Save_modified.dat\n")
+	fmt.Println("  读取存档: go run main.go -input Save.dat -output Save_modified.dat")
+	fmt.Println("  读取进度: go run main.go -progress WC.cfg")
+	fmt.Println()
 
 	// 内部函数定义
 	getUserInput := func(prompt string) string {

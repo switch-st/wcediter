@@ -33,6 +33,8 @@ var (
 
 	// 存档进度相关
 	progressNames = []string{"进度一", "进度二", "进度三", "进度四", "进度五"}
+	// 默认进度名称（当读取失败时使用）
+	defaultProgressNames = []string{"进度一", "进度二", "进度三", "进度四", "进度五"}
 
 	// 配置文件相关
 	configFile  = "./wcediter.ini"
@@ -428,6 +430,82 @@ func selectSaveFile(parentWindow fyne.Window, onSelect fileSelectCallback) {
 	fileWindow.Show()
 }
 
+// 读取进度信息并更新进度名称列表
+func updateProgressNames(saveFilePath string, radioGroup *widget.RadioGroup) {
+	// 获取存档文件所在目录
+	saveDir := filepath.Dir(saveFilePath)
+	// 构建 WC.cfg 文件路径
+	cfgPath := filepath.Join(saveDir, "WC.cfg")
+
+	log.Printf("尝试读取进度信息，配置文件路径: %s", cfgPath)
+
+	// 创建编辑器实例用于读取进度
+	editor := wcsave.NewSaveEditor()
+	progressInfos, err := editor.ReadProgress(cfgPath)
+
+	if err != nil {
+		log.Printf("读取进度信息失败: %v，使用默认进度名称", err)
+		// 读取失败，使用默认进度名称
+		progressNames = make([]string, len(defaultProgressNames))
+		copy(progressNames, defaultProgressNames)
+	} else {
+		log.Printf("成功读取进度信息，共 %d 个进度", len(progressInfos))
+		// 读取成功，更新进度名称列表
+		// 确保至少有5个进度（游戏有5个存档位）
+		maxProgress := 5
+		if len(progressInfos) < maxProgress {
+			maxProgress = len(progressInfos)
+		}
+		progressNames = make([]string, maxProgress)
+		for i := 0; i < maxProgress; i++ {
+			info := progressInfos[i]
+			// 格式：位置名称 + 编号
+			if info.LocationName != "" && info.ProgressID > 0 {
+				progressNames[i] = fmt.Sprintf("%s（%d）", info.LocationName, info.ProgressID)
+			} else if info.LocationName != "" {
+				progressNames[i] = info.LocationName
+			} else if info.ProgressID > 0 {
+				progressNames[i] = fmt.Sprintf("进度%d", info.ProgressID)
+			} else {
+				// 如果都没有，使用默认名称
+				if i < len(defaultProgressNames) {
+					progressNames[i] = defaultProgressNames[i]
+				} else {
+					progressNames[i] = fmt.Sprintf("进度%d", i+1)
+				}
+			}
+		}
+		// 如果读取的进度少于5个，用默认名称填充
+		if len(progressNames) < 5 {
+			for i := len(progressNames); i < 5; i++ {
+				if i < len(defaultProgressNames) {
+					progressNames = append(progressNames, defaultProgressNames[i])
+				} else {
+					progressNames = append(progressNames, fmt.Sprintf("进度%d", i+1))
+				}
+			}
+		}
+	}
+
+	// 更新单选按钮组的选项
+	if radioGroup != nil {
+		radioGroup.Options = progressNames
+		// 如果当前选中的项不在新列表中，选择第一项
+		currentSelected := radioGroup.Selected
+		found := false
+		for _, name := range progressNames {
+			if name == currentSelected {
+				found = true
+				break
+			}
+		}
+		if !found && len(progressNames) > 0 {
+			radioGroup.SetSelected(progressNames[0])
+		}
+		radioGroup.Refresh()
+	}
+}
+
 // 创建进度选择界面
 func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 	log.Println("创建进度选择界面，包含文件选择功能")
@@ -463,8 +541,26 @@ func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 	if len(tags) > 0 {
 		selectedTag = tags[0]
 	}
+
+	// 创建单选按钮组（先使用默认名称，稍后会在文件选择时更新）
+	radioGroup := widget.NewRadioGroup(progressNames, func(value string) {
+		// 这个回调在单选按钮变化时触发，但我们只在点击确定按钮时处理
+	})
+	radioGroup.SetSelected(progressNames[0]) // 默认选择第一个进度
+
+	// 如果初始有选中的文件，尝试读取进度信息
+	if len(tags) > 0 && selectedTag != "" {
+		if filePath, ok := tagPathMap[selectedTag]; ok {
+			updateProgressNames(filePath, radioGroup)
+		}
+	}
+
 	fileSelect := widget.NewSelect(tags, func(tag string) {
 		selectedTag = tag
+		// 当文件选择改变时，更新进度名称
+		if filePath, ok := tagPathMap[tag]; ok {
+			updateProgressNames(filePath, radioGroup)
+		}
 	})
 	if len(tags) > 0 {
 		fileSelect.SetSelected(selectedTag)
@@ -491,6 +587,10 @@ func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 				// 选中用户刚刚选择的文件
 				selectedTag = selectedTagFromDialog
 				fileSelect.SetSelected(selectedTag)
+				// 更新进度名称
+				if filePath != "" {
+					updateProgressNames(filePath, radioGroup)
+				}
 			}
 			fileSelect.Refresh()
 		})
@@ -504,12 +604,6 @@ func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 	// 创建进度名称标签
 	progressTitle := widget.NewLabel("进度名（1-5）")
 	progressTitle.Alignment = fyne.TextAlignLeading // 左对齐
-
-	// 创建单选按钮组
-	radioGroup := widget.NewRadioGroup(progressNames, func(value string) {
-		// 这个回调在单选按钮变化时触发，但我们只在点击确定按钮时处理
-	})
-	radioGroup.SetSelected(progressNames[0]) // 默认选择第一个进度
 
 	// 创建确定按钮
 	confirmButton := widget.NewButton("确定", func() {
@@ -1057,7 +1151,7 @@ func main() {
 
 	// 创建窗口
 	log.Println("正在创建主窗口...")
-	window := fyneApp.NewWindow("风云存档编辑器 V1.0")
+	window := fyneApp.NewWindow("风云存档编辑器 V1.1")
 	currentWindow = window // 设置全局窗口变量
 	log.Println("主窗口创建成功")
 
