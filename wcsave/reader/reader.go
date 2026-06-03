@@ -1,37 +1,42 @@
 package reader
 
 import (
-	"encoding/binary"
 	"fmt"
 	"os"
 	"strings"
 
-	"wcediter/assets"
-	"wcediter/wcsave/models"
-	"wcediter/wcsave/utils"
-
-	"golang.org/x/text/encoding/traditionalchinese"
+	"wceditor/assets"
+	"wceditor/wcsave/models"
+	"wceditor/wcsave/utils"
 )
 
-// locationNames 存储位置名称数组，在 init 函数中初始化
-var locationNames []string
+// locationNamesTraditional 存储不同版本的位置名称数组，在 init 函数中初始化
+var locationNamesTraditional []string
+
+// locationNamesSimplified 存储不同版本的位置名称数组，在 init 函数中初始化
+var locationNamesSimplified []string
 
 // init 初始化位置名称数组
 func init() {
-	// 将 LocationNameBytes 解析为字符串数组
-	content := string(assets.LocationNameBytes)
-	locationNames = strings.Split(content, "\n")
+	// 分别解析繁体/简体位置名称表
+	locationNamesTraditional = strings.Split(string(assets.LocationNameHantBytes), "\n")
+	locationNamesSimplified = strings.Split(string(assets.LocationNameHansBytes), "\n")
 }
 
 // GetLocationNameByID 通过位置ID获取位置名称
-func GetLocationNameByID(locationID int) string {
+func GetLocationNameByID(locationID int, charset models.Charset) string {
+	locationNames := locationNamesTraditional
+	if charset == models.CharsetSimplified {
+		locationNames = locationNamesSimplified
+	}
+
 	if locationID >= 0 && locationID < len(locationNames) {
 		return locationNames[locationID]
 	}
 	return "未知位置"
 }
 
-// readMoneyData 读取银两数据的函数
+// ReadMoneyData 读取银两数据的函数
 func ReadMoneyData(file *os.File, position int64) (models.MoneyInfo, error) {
 	var moneyInfo models.MoneyInfo
 	moneyInfo.Position = position
@@ -53,9 +58,7 @@ func ReadMoneyData(file *os.File, position int64) (models.MoneyInfo, error) {
 	}
 
 	// 读取4字节银两数据
-	money, moneyRawBytes, err := utils.ReadAndConvert(file, 4, func(b []byte) (int32, error) {
-		return int32(binary.LittleEndian.Uint32(b)), nil
-	})
+	money, moneyRawBytes, err := utils.ReadAndConvert(file, 4, utils.Int32LittleEndianConverter)
 
 	if err != nil {
 		return moneyInfo, fmt.Errorf("读取银两数据失败: %v", err)
@@ -71,7 +74,7 @@ func ReadMoneyData(file *os.File, position int64) (models.MoneyInfo, error) {
 }
 
 // readCharacterProperties 读取角色属性的函数
-func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByteData, []byte, int64, bool, error) {
+func readCharacterProperties(file *os.File, charset models.Charset) (models.CharacterData, models.RawByteData, []byte, int64, bool, error) {
 	// 记录当前位置
 	position, err := file.Seek(0, 1)
 	if err != nil {
@@ -99,19 +102,8 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("文件指针回退失败: %v", err)
 	}
 
-	// 定义名字编码转换器
-	nameConverter := func(b []byte) ([]byte, error) {
-		// 保留原始字节内容，直接从Big5转换为UTF-8
-		utf8Bytes, err := traditionalchinese.Big5.NewDecoder().Bytes(b)
-		if err != nil {
-			// 转换失败时返回原始字节
-			return b, nil
-		}
-		return utf8Bytes, nil
-	}
-
 	// 使用泛型方法读取并转换名字
-	utf8Name, _, err = utils.ReadAndConvert(file, 6, nameConverter)
+	utf8Name, _, err = utils.ReadAndConvert(file, 6, utils.NewUTF8Converter(charset))
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取名字失败: %v", err)
 	}
@@ -122,13 +114,8 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("跳过名字后字节失败: %v", err)
 	}
 
-	// 使用泛型方法读取4字节字段
-	uint32Converter := func(b []byte) (int32, error) {
-		return int32(binary.LittleEndian.Uint32(b)), nil
-	}
-
 	// 读取当前经验值（4字节）
-	val, bytes, err := utils.ReadAndConvert(file, 4, uint32Converter)
+	val, bytes, err := utils.ReadAndConvert(file, 4, utils.Int32LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取当前经验值失败: %v", err)
 	}
@@ -136,7 +123,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.CurrentExp = bytes
 
 	// 读取升级经验值（4字节）
-	val, bytes, err = utils.ReadAndConvert(file, 4, uint32Converter)
+	val, bytes, err = utils.ReadAndConvert(file, 4, utils.Int32LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取升级经验值失败: %v", err)
 	}
@@ -144,7 +131,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.NextLevelExp = bytes
 
 	// 读取最大生命值（4字节）
-	val, bytes, err = utils.ReadAndConvert(file, 4, uint32Converter)
+	val, bytes, err = utils.ReadAndConvert(file, 4, utils.Int32LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取最大生命值失败: %v", err)
 	}
@@ -152,7 +139,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.MaxHP = bytes
 
 	// 读取最大内力值（4字节）
-	val, bytes, err = utils.ReadAndConvert(file, 4, uint32Converter)
+	val, bytes, err = utils.ReadAndConvert(file, 4, utils.Int32LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取最大内力值失败: %v", err)
 	}
@@ -160,7 +147,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.MaxMP = bytes
 
 	// 读取当前生命值（4字节）
-	val, bytes, err = utils.ReadAndConvert(file, 4, uint32Converter)
+	val, bytes, err = utils.ReadAndConvert(file, 4, utils.Int32LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取当前生命值失败: %v", err)
 	}
@@ -168,20 +155,15 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.CurrentHP = bytes
 
 	// 读取当前内力值（4字节）
-	val, bytes, err = utils.ReadAndConvert(file, 4, uint32Converter)
+	val, bytes, err = utils.ReadAndConvert(file, 4, utils.Int32LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取当前内力值失败: %v", err)
 	}
 	data.CurrentMP = val
 	rawBytes.CurrentMP = bytes
 
-	// 使用泛型方法读取2字节字段
-	uint16Converter := func(b []byte) (int16, error) {
-		return int16(binary.LittleEndian.Uint16(b)), nil
-	}
-
 	// 读取力量（2字节）
-	val16, bytes, err := utils.ReadAndConvert(file, 2, uint16Converter)
+	val16, bytes, err := utils.ReadAndConvert(file, 2, utils.Int16LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取力量失败: %v", err)
 	}
@@ -189,7 +171,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.Strength = bytes
 
 	// 读取反应（2字节）
-	val16, bytes, err = utils.ReadAndConvert(file, 2, uint16Converter)
+	val16, bytes, err = utils.ReadAndConvert(file, 2, utils.Int16LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取反应失败: %v", err)
 	}
@@ -197,7 +179,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.Reaction = bytes
 
 	// 读取体质（2字节）
-	val16, bytes, err = utils.ReadAndConvert(file, 2, uint16Converter)
+	val16, bytes, err = utils.ReadAndConvert(file, 2, utils.Int16LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取体质失败: %v", err)
 	}
@@ -205,7 +187,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.Constitution = bytes
 
 	// 读取速度（2字节）
-	val16, bytes, err = utils.ReadAndConvert(file, 2, uint16Converter)
+	val16, bytes, err = utils.ReadAndConvert(file, 2, utils.Int16LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取速度失败: %v", err)
 	}
@@ -213,7 +195,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.Speed = bytes
 
 	// 读取攻击（2字节）
-	val16, bytes, err = utils.ReadAndConvert(file, 2, uint16Converter)
+	val16, bytes, err = utils.ReadAndConvert(file, 2, utils.Int16LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取攻击失败: %v", err)
 	}
@@ -221,7 +203,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	rawBytes.Attack = bytes
 
 	// 读取防御（2字节）
-	val16, bytes, err = utils.ReadAndConvert(file, 2, uint16Converter)
+	val16, bytes, err = utils.ReadAndConvert(file, 2, utils.Int16LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取防御失败: %v", err)
 	}
@@ -235,7 +217,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	}
 
 	// 读取运气（2字节）
-	val16, bytes, err = utils.ReadAndConvert(file, 2, uint16Converter)
+	val16, bytes, err = utils.ReadAndConvert(file, 2, utils.Int16LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取运气失败: %v", err)
 	}
@@ -249,7 +231,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 	}
 
 	// 读取等级（2字节）
-	val16, bytes, err = utils.ReadAndConvert(file, 2, uint16Converter)
+	val16, bytes, err = utils.ReadAndConvert(file, 2, utils.Int16LittleEndianConverter)
 	if err != nil {
 		return data, rawBytes, utf8Name, position, false, fmt.Errorf("读取等级失败: %v", err)
 	}
@@ -266,7 +248,7 @@ func readCharacterProperties(file *os.File) (models.CharacterData, models.RawByt
 }
 
 // ReadCharacters 读取所有角色数据
-func ReadCharacters(file *os.File) ([]models.CharacterInfo, error) {
+func ReadCharacters(file *os.File, charset models.Charset) ([]models.CharacterInfo, error) {
 	// 定位到指定位置
 	targetPosition := int64(202618)
 	_, err := file.Seek(targetPosition, 0)
@@ -280,7 +262,7 @@ func ReadCharacters(file *os.File) ([]models.CharacterInfo, error) {
 	// 循环读取多个角色数据，最多读取5个角色
 	for i := 0; i < 5; i++ {
 		// 调用函数读取角色属性
-		characterData, rawBytes, utf8Name, position, continueReading, err := readCharacterProperties(file)
+		characterData, rawBytes, utf8Name, position, continueReading, err := readCharacterProperties(file, charset)
 		if err != nil {
 			return characters, fmt.Errorf("读取角色属性时出错: %v", err)
 		}
@@ -308,7 +290,7 @@ func ReadCharacters(file *os.File) ([]models.CharacterInfo, error) {
 }
 
 // ReadProgress 从 WC.cfg 文件中读取进度信息
-func ReadProgress(file *os.File) ([]models.ProgressInfo, error) {
+func ReadProgress(file *os.File, charset models.Charset) ([]models.ProgressInfo, error) {
 	// 检查文件大小
 	fileInfo, err := file.Stat()
 	if err != nil {
@@ -328,12 +310,8 @@ func ReadProgress(file *os.File) ([]models.ProgressInfo, error) {
 		return nil, fmt.Errorf("无法定位到进度编号位置: %v", err)
 	}
 
-	uint32Converter := func(b []byte) (int32, error) {
-		return int32(binary.LittleEndian.Uint32(b)), nil
-	}
-
 	for i := 0; i < 5; i++ {
-		val, _, err := utils.ReadAndConvert(file, 4, uint32Converter)
+		val, _, err := utils.ReadAndConvert(file, 4, utils.Int32LittleEndianConverter)
 		if err != nil {
 			return nil, fmt.Errorf("读取进度编号[%d]失败: %v", i, err)
 		}
@@ -348,7 +326,7 @@ func ReadProgress(file *os.File) ([]models.ProgressInfo, error) {
 	}
 
 	for i := 0; i < 5; i++ {
-		val, _, err := utils.ReadAndConvert(file, 4, uint32Converter)
+		val, _, err := utils.ReadAndConvert(file, 4, utils.Int32LittleEndianConverter)
 		if err != nil {
 			return nil, fmt.Errorf("读取位置编号[%d]失败: %v", i, err)
 		}
@@ -359,7 +337,7 @@ func ReadProgress(file *os.File) ([]models.ProgressInfo, error) {
 	result := make([]models.ProgressInfo, 5)
 	for i := 0; i < 5; i++ {
 		// 通过位置ID获取位置名称
-		locationName := GetLocationNameByID(locationIDs[i])
+		locationName := GetLocationNameByID(locationIDs[i], charset)
 
 		result[i] = models.ProgressInfo{
 			ProgressID:   progressIDs[i],

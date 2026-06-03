@@ -3,9 +3,9 @@ package wcsave
 import (
 	"os"
 
-	"wcediter/wcsave/models"
-	"wcediter/wcsave/reader"
-	"wcediter/wcsave/writer"
+	"wceditor/wcsave/models"
+	"wceditor/wcsave/reader"
+	"wceditor/wcsave/writer"
 )
 
 // SaveEditor 是存档编辑器的主要接口
@@ -24,15 +24,15 @@ func NewSaveEditor() *SaveEditor {
 }
 
 // ReadSave 从文件中读取存档数据
-func (e *SaveEditor) ReadSave(filePath string) error {
+func (e *SaveEditor) ReadSave(filePath string, charset models.Charset) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// 读取角色数据
-	characters, err := reader.ReadCharacters(file)
+	characters, err := reader.ReadCharacters(file, charset)
 	if err != nil {
 		return err
 	}
@@ -50,8 +50,8 @@ func (e *SaveEditor) ReadSave(filePath string) error {
 }
 
 // SaveChanges 将修改保存到新文件
-func (e *SaveEditor) SaveChanges(sourceFilePath, destFilePath string) error {
-	return writer.SaveChanges(sourceFilePath, destFilePath, e.Characters, e.MoneyInfo)
+func (e *SaveEditor) SaveChanges(sourceFilePath, destinationFilePath string) error {
+	return writer.SaveChanges(sourceFilePath, destinationFilePath, e.Characters, e.MoneyInfo)
 }
 
 // GetCharacterCount 获取角色数量
@@ -82,14 +82,13 @@ func (e *SaveEditor) UpdateCharacter(index int, data models.CharacterData) bool 
 }
 
 // ReadProgress 从 WC.cfg 文件中读取进度信息
-func (e *SaveEditor) ReadProgress(cfgFilePath string) ([]models.ProgressInfo, error) {
+func (e *SaveEditor) ReadProgress(cfgFilePath string, charset models.Charset) ([]models.ProgressInfo, error) {
 	file, err := os.Open(cfgFilePath)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-
-	progressInfos, err := reader.ReadProgress(file)
+	defer func() { _ = file.Close() }()
+	progressInfos, err := reader.ReadProgress(file, charset)
 	if err != nil {
 		return nil, err
 	}

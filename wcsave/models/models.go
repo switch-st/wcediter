@@ -1,5 +1,13 @@
 package models
 
+// Charset 角色名称使用的编码类型
+type Charset int
+
+const (
+	CharsetTraditional Charset = iota // 繁体版，使用 Big5（默认）
+	CharsetSimplified                 // 简体版，使用 GBK
+)
+
 // CharacterData 角色属性数据结构
 type CharacterData struct {
 	CurrentExp   int32 // 当前经验值

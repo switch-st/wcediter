@@ -9,26 +9,41 @@ import (
 	"strconv"
 	"strings"
 
-	"wcediter/wcsave"
-	"wcediter/wcsave/models"
+	"wceditor/wcsave"
+	"wceditor/wcsave/models"
 )
 
 func main() {
 	// 命令行参数解析
 	sourceFilePathFlag := flag.String("input", "", "输入存档文件路径")
-	destFilePathFlag := flag.String("output", "", "输出存档文件路径")
+	destinationFilePathFlag := flag.String("output", "", "输出存档文件路径")
 	progressFilePathFlag := flag.String("progress", "", "读取进度信息（WC.cfg 文件路径）")
+	charsetFlag := flag.Int("charset", int(models.CharsetTraditional), "角色名字符集：0=繁体版(Big5), 1=简体版(GBK)")
 	flag.Parse()
 
 	// 使用命令行参数
 	sourceFilePath := *sourceFilePathFlag
-	destFilePath := *destFilePathFlag
+	destinationFilePath := *destinationFilePathFlag
 	progressFilePath := *progressFilePathFlag
+	charsetValue := *charsetFlag
+
+	if charsetValue != int(models.CharsetTraditional) && charsetValue != int(models.CharsetSimplified) {
+		fmt.Printf("错误: -charset 参数仅允许 0 或 1，当前值: %d\n", charsetValue)
+		fmt.Println("  0 = 繁体版(Big5)")
+		fmt.Println("  1 = 简体版(GBK)")
+		os.Exit(1)
+	}
+
+	charset := models.Charset(charsetValue)
+	charsetLabel := "繁体版(Big5)"
+	if charset == models.CharsetSimplified {
+		charsetLabel = "简体版(GBK)"
+	}
 
 	// 如果提供了 -progress 参数，读取并显示进度信息
 	if progressFilePath != "" {
 		editor := wcsave.NewSaveEditor()
-		progressInfos, err := editor.ReadProgress(progressFilePath)
+		progressInfos, err := editor.ReadProgress(progressFilePath, charset)
 		if err != nil {
 			fmt.Printf("读取进度文件失败: %v\n", err)
 			os.Exit(1)
@@ -37,7 +52,8 @@ func main() {
 		fmt.Println("===================================")
 		fmt.Println("游戏进度信息")
 		fmt.Println("===================================")
-		fmt.Printf("进度文件: %s\n\n", progressFilePath)
+		fmt.Printf("进度文件: %s\n", progressFilePath)
+		fmt.Printf("当前选择的版本: %s (charset=%d)\n\n", charsetLabel, charsetValue)
 		fmt.Println("=== 进度列表 ===")
 
 		for i, info := range progressInfos {
@@ -55,8 +71,8 @@ func main() {
 	if sourceFilePath == "" {
 		fmt.Println("错误: 必须使用 -input 参数指定输入存档文件路径，或使用 -progress 参数读取进度信息")
 		fmt.Println("使用示例:")
-		fmt.Println("  读取存档: go run main.go -input Save.dat [-output Save_modified.dat]")
-		fmt.Println("  读取进度: go run main.go -progress WC.cfg")
+		fmt.Println("  读取存档: go run main.go -input Save.dat [-output Save_modified.dat] [-charset 0|1]")
+		fmt.Println("  读取进度: go run main.go -progress WC.cfg [-charset 0|1]")
 		os.Exit(1)
 	}
 
@@ -65,8 +81,9 @@ func main() {
 	fmt.Println("游戏存档编辑器")
 	fmt.Println("===================================")
 	fmt.Printf("当前使用的输入文件: %s\n", sourceFilePath)
-	if destFilePath != "" {
-		fmt.Printf("当前使用的输出文件: %s\n", destFilePath)
+	fmt.Printf("当前选择的版本: %s (charset=%d)\n", charsetLabel, charsetValue)
+	if destinationFilePath != "" {
+		fmt.Printf("当前使用的输出文件: %s\n", destinationFilePath)
 	} else {
 		fmt.Println("未指定输出文件，将以只读模式运行")
 	}
@@ -75,9 +92,10 @@ func main() {
 	fmt.Println("  -input <文件路径>  指定输入存档文件路径 (必需，除非使用 -progress)")
 	fmt.Println("  -output <文件路径> 指定输出存档文件路径 (可选)")
 	fmt.Println("  -progress <文件路径> 读取进度信息 (WC.cfg 文件路径)")
+	fmt.Println("  -charset <0|1> 角色名字符集，0=繁体版(Big5)，1=简体版(GBK)，默认0")
 	fmt.Println("例如:")
-	fmt.Println("  读取存档: go run main.go -input Save.dat -output Save_modified.dat")
-	fmt.Println("  读取进度: go run main.go -progress WC.cfg")
+	fmt.Println("  读取存档: go run main.go -input Save.dat -output Save_modified.dat -charset 0")
+	fmt.Println("  读取进度: go run main.go -progress WC.cfg -charset 0")
 	fmt.Println()
 
 	// 内部函数定义
@@ -105,7 +123,7 @@ func main() {
 	editor := wcsave.NewSaveEditor()
 
 	// 读取存档数据
-	err := editor.ReadSave(sourceFilePath)
+	err := editor.ReadSave(sourceFilePath, charset)
 	if err != nil {
 		fmt.Printf("读取存档文件失败: %v\n", err)
 		os.Exit(1)
@@ -152,7 +170,7 @@ func main() {
 
 	// 只有在指定了输出文件时才显示修改功能
 	var needModifications bool = false
-	if destFilePath != "" {
+	if destinationFilePath != "" {
 		// 开始命令行交互修改
 		fmt.Println("\n=== 修改功能 ===")
 
@@ -345,11 +363,11 @@ func main() {
 		// 如果有修改且指定了输出文件，保存修改
 		if needModifications {
 			fmt.Println("\n=== 保存修改 ===")
-			err = editor.SaveChanges(sourceFilePath, destFilePath)
+			err = editor.SaveChanges(sourceFilePath, destinationFilePath)
 			if err != nil {
 				fmt.Printf("保存修改失败: %v\n", err)
 			} else {
-				fmt.Printf("已创建修改后的文件: %s\n", destFilePath)
+				fmt.Printf("已创建修改后的文件: %s\n", destinationFilePath)
 
 				// 添加修改前后的对比显示
 				fmt.Println("\n=== 修改前后对比 ===")

@@ -9,7 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"wcediter/wcsave"
+	"wceditor/wcsave"
+	"wceditor/wcsave/models"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -37,7 +38,7 @@ var (
 	defaultProgressNames = []string{"进度一", "进度二", "进度三", "进度四", "进度五"}
 
 	// 配置文件相关
-	configFile  = "./wcediter.ini"
+	configFile  = "./wceditor.ini"
 	fileRecords []FileRecordItem
 	// 固定的默认记录
 	defaultRecords = map[string]string{
@@ -48,6 +49,16 @@ var (
 	}
 	// 保存默认记录的顺序
 	defaultRecordOrder = []string{"原版", "无名原版", "无名简单版", "无名困难版"}
+
+	// 当前选择的版本（默认繁体版）
+	selectedCharset = models.CharsetTraditional
+)
+
+const (
+	defaultRecordsSectionName = "default_Records"
+	recordsSectionName        = "Records"
+	settingsSectionName       = "Settings"
+	charsetKeyName            = "charset"
 )
 
 // FileRecordItem 表示选择记录项
@@ -57,17 +68,17 @@ type FileRecordItem struct {
 	IsDefault bool
 }
 
-// 属性输入框结构体
+// propertyInput 属性输入框结构体
 type propertyInput struct {
 	label    *widget.Label
 	input    *widget.Entry
 	property string
 }
 
-// 自定义文件过滤器，只显示以0.dat结尾的文件
+// zeroDatFileFilter 自定义文件过滤器，只显示以0.dat结尾的文件
 type zeroDatFileFilter struct{}
 
-// 实现FileFilter接口的Matches方法
+// Matches 实现FileFilter接口的Matches方法
 func (f *zeroDatFileFilter) Matches(uri fyne.URI) bool {
 	// 获取文件名
 	fileName := filepath.Base(uri.Path())
@@ -75,14 +86,14 @@ func (f *zeroDatFileFilter) Matches(uri fyne.URI) bool {
 	return strings.HasSuffix(fileName, "0.dat")
 }
 
-// 进度选择回调函数
+// progressSelectCallback 进度选择回调函数
 type progressSelectCallback func(int)
 
-// 文件选择回调函数类型
+// fileSelectCallback 文件选择回调函数类型
 type fileSelectCallback func(string, string)
 
-// 选择存档文件的独立方法 - 使用新窗口展示
-func selectSaveFile(parentWindow fyne.Window, onSelect fileSelectCallback) {
+// selectSaveFile 选择存档文件的独立方法 - 使用新窗口展示
+func selectSaveFile(_ fyne.Window, onSelect fileSelectCallback) {
 	// 加载选择记录
 	loadFileRecords()
 
@@ -221,7 +232,7 @@ func selectSaveFile(parentWindow fyne.Window, onSelect fileSelectCallback) {
 					} else {
 						dialog.ShowInformation("提示", "请选择以0.dat结尾的存档文件", fileWindow)
 					}
-					reader.Close()
+					_ = reader.Close()
 				}
 			},
 			fileWindow,
@@ -430,7 +441,7 @@ func selectSaveFile(parentWindow fyne.Window, onSelect fileSelectCallback) {
 	fileWindow.Show()
 }
 
-// 读取进度信息并更新进度名称列表
+// updateProgressNames 读取进度信息并更新进度名称列表
 func updateProgressNames(saveFilePath string, radioGroup *widget.RadioGroup) {
 	// 获取存档文件所在目录
 	saveDir := filepath.Dir(saveFilePath)
@@ -440,8 +451,10 @@ func updateProgressNames(saveFilePath string, radioGroup *widget.RadioGroup) {
 	log.Printf("尝试读取进度信息，配置文件路径: %s", cfgPath)
 
 	// 创建编辑器实例用于读取进度
-	editor := wcsave.NewSaveEditor()
-	progressInfos, err := editor.ReadProgress(cfgPath)
+	if editor == nil {
+		editor = wcsave.NewSaveEditor()
+	}
+	progressInfos, err := editor.ReadProgress(cfgPath, selectedCharset)
 
 	if err != nil {
 		log.Printf("读取进度信息失败: %v，使用默认进度名称", err)
@@ -506,18 +519,21 @@ func updateProgressNames(saveFilePath string, radioGroup *widget.RadioGroup) {
 	}
 }
 
-// 创建进度选择界面
+// TODO 根据简繁版本使用不同的存档进度简繁word.txt
+
+// createProgressSelectUI 创建进度选择界面
 func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 	log.Println("创建进度选择界面，包含文件选择功能")
 	// 创建文件选择相关组件
 	fileLabel := widget.NewLabel("请选择存档文件：")
+	charsetLabel := widget.NewLabel("请选择简繁版本：")
 
 	// 加载选择记录
 	loadFileRecords()
 
 	// 准备选择记录的标签和路径映射
 	tagPathMap := make(map[string]string)
-	tags := []string{}
+	var tags []string
 
 	// 如果没有记录，使用默认记录
 	if len(fileRecords) == 0 {
@@ -596,6 +612,32 @@ func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 		})
 	})
 
+	charsetOptions := []string{
+		"繁体版",
+		"简体版",
+	}
+	charsetSelect := widget.NewSelect(charsetOptions, func(value string) {
+		switch value {
+		case charsetOptions[1]:
+			selectedCharset = models.CharsetSimplified
+		default:
+			selectedCharset = models.CharsetTraditional
+		}
+		// 切换简繁版本后，按当前选中的存档重新加载进度名称
+		if selectedTag != "" {
+			if filePath, ok := tagPathMap[selectedTag]; ok && filePath != "" {
+				updateProgressNames(filePath, radioGroup)
+			}
+		}
+		// 记录上次选择
+		saveFileRecords()
+	})
+	if selectedCharset == models.CharsetSimplified {
+		charsetSelect.SetSelected(charsetOptions[1])
+	} else {
+		charsetSelect.SetSelected(charsetOptions[0])
+	}
+
 	// 创建标题
 	title := widget.NewLabel("请选择欲修改的进度名：")
 	title.Alignment = fyne.TextAlignCenter
@@ -669,10 +711,15 @@ func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 		nil, nil, fileLabel, browseButton,
 		fileSelect,
 	)
+	charsetSelectionContainer := container.NewBorder(
+		nil, nil, charsetLabel, nil,
+		charsetSelect,
+	)
 
 	// 整个内容容器
 	content := container.NewVBox(
 		fileSelectionContainer,
+		charsetSelectionContainer,
 		title,
 		layout.NewSpacer(),
 		radioCenterContainer,
@@ -684,7 +731,7 @@ func createProgressSelectUI(onSelect progressSelectCallback) *fyne.Container {
 	return content
 }
 
-// 创建属性输入框
+// createPropertyInput 创建属性输入框
 func createPropertyInput(property, labelText string, initialValue string) *propertyInput {
 	label := widget.NewLabel(labelText)
 	input := widget.NewEntry()
@@ -700,7 +747,7 @@ func createPropertyInput(property, labelText string, initialValue string) *prope
 	}
 }
 
-// 加载进度文件并打开角色属性窗口
+// loadProgressAndOpenCharacterUI 加载进度文件并打开角色属性窗口
 func loadProgressAndOpenCharacterUI(progressIndex int, progressWindow fyne.Window) {
 	if progressIndex < 0 || progressIndex >= len(progressNames) {
 		log.Printf("无效的进度索引: %d", progressIndex)
@@ -741,7 +788,7 @@ func loadProgressAndOpenCharacterUI(progressIndex int, progressWindow fyne.Windo
 	}
 }
 
-// 打开角色属性窗口
+// openCharacterWindow 打开角色属性窗口
 func openCharacterWindow(progressIndex int) {
 	// 创建新的角色属性窗口
 	log.Println("创建角色属性窗口...")
@@ -774,7 +821,7 @@ func openCharacterWindow(progressIndex int) {
 	characterWindow.Show()
 }
 
-// 加载存档文件
+// loadSaveFile 加载存档文件
 func loadSaveFile(filePath string) error {
 	// 检查文件是否存在
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
@@ -786,19 +833,19 @@ func loadSaveFile(filePath string) error {
 	editor = wcsave.NewSaveEditor()
 
 	// 读取存档
-	err := editor.ReadSave(filePath)
+	err := editor.ReadSave(filePath, selectedCharset)
 	if err != nil {
 		return fmt.Errorf("读取存档失败: %v", err)
 	}
 
 	currentSave = filePath
-	log.Printf("成功加载存档: %s", filePath)
+	log.Printf("成功加载存档: %s，版本: %s", filePath, charsetDisplayName(selectedCharset))
 	log.Printf("发现 %d 个角色", editor.GetCharacterCount())
 
 	return nil
 }
 
-// 创建角色选择下拉框
+// createCharacterTabs 创建角色选择下拉框
 func createCharacterTabs(propertyInputs []*propertyInput) *container.AppTabs {
 	// 初始化角色属性输入框映射
 	if characterPropertyInputs == nil {
@@ -845,7 +892,7 @@ func createCharacterTabs(propertyInputs []*propertyInput) *container.AppTabs {
 	return tabs
 }
 
-// 更新角色数据界面
+// updateCharacterUI 更新角色数据界面
 func updateCharacterUI(charIndex int, propertyInputs []*propertyInput) {
 	if editor == nil {
 		return
@@ -891,7 +938,7 @@ func updateCharacterUI(charIndex int, propertyInputs []*propertyInput) {
 	}
 }
 
-// 保存角色数据更改
+// saveCharacterChanges 保存角色数据更改
 func saveCharacterChanges(charIndex int, propertyInputs []*propertyInput) error {
 	if editor == nil {
 		return fmt.Errorf("编辑器未初始化")
@@ -1007,7 +1054,7 @@ func saveCharacterChanges(charIndex int, propertyInputs []*propertyInput) error 
 	return nil
 }
 
-// 创建主界面
+// createMainUI 创建主界面
 func createMainUI() *fyne.Container {
 	// 初始化默认值
 	moneyValue := "0"
@@ -1146,12 +1193,12 @@ func main() {
 	// 创建Fyne应用，使用NewWithID提供唯一标识符以避免Preferences API错误
 	log.Println("正在创建Fyne应用实例...")
 	// 为macOS添加显示配置选项
-	fyneApp = app.NewWithID("wang.switch.wcediter")
+	fyneApp = app.NewWithID("wang.switch.wceditor")
 	log.Println("Fyne应用实例创建成功")
 
 	// 创建窗口
 	log.Println("正在创建主窗口...")
-	window := fyneApp.NewWindow("风云存档编辑器 V1.1")
+	window := fyneApp.NewWindow("风云存档编辑器 V1.2")
 	currentWindow = window // 设置全局窗口变量
 	log.Println("主窗口创建成功")
 
@@ -1193,7 +1240,7 @@ func main() {
 	fyneApp.Run()
 }
 
-// 获取当前工作目录的辅助函数
+// getCurrentDir 获取当前工作目录的辅助函数
 func getCurrentDir() string {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -1202,92 +1249,116 @@ func getCurrentDir() string {
 	return dir
 }
 
+func normalizeCharsetValue(value int) models.Charset {
+	if value == int(models.CharsetSimplified) {
+		return models.CharsetSimplified
+	}
+	return models.CharsetTraditional
+}
+
+func charsetDisplayName(charset models.Charset) string {
+	if charset == models.CharsetSimplified {
+		return "简体版"
+	}
+	return "繁体版"
+}
+
+func ensureConfigDefaults(cfg *ini.File) (bool, error) {
+	changed := false
+
+	defaultSection, err := cfg.GetSection(defaultRecordsSectionName)
+	if err != nil {
+		defaultSection, err = cfg.NewSection(defaultRecordsSectionName)
+		if err != nil {
+			return false, fmt.Errorf("创建%s节失败: %w", defaultRecordsSectionName, err)
+		}
+		changed = true
+	}
+
+	for _, tag := range defaultRecordOrder {
+		if !defaultSection.HasKey(tag) {
+			if _, err = defaultSection.NewKey(tag, defaultRecords[tag]); err != nil {
+				return false, fmt.Errorf("添加默认记录失败: %w", err)
+			}
+			changed = true
+		}
+	}
+
+	if _, err = cfg.GetSection(recordsSectionName); err != nil {
+		if _, err = cfg.NewSection(recordsSectionName); err != nil {
+			return false, fmt.Errorf("创建%s节失败: %w", recordsSectionName, err)
+		}
+		changed = true
+	}
+
+	settingsSection, err := cfg.GetSection(settingsSectionName)
+	if err != nil {
+		settingsSection, err = cfg.NewSection(settingsSectionName)
+		if err != nil {
+			return false, fmt.Errorf("创建%s节失败: %w", settingsSectionName, err)
+		}
+		changed = true
+	}
+
+	if !settingsSection.HasKey(charsetKeyName) {
+		if _, err = settingsSection.NewKey(charsetKeyName, strconv.Itoa(int(models.CharsetTraditional))); err != nil {
+			return false, fmt.Errorf("添加%s配置失败: %w", charsetKeyName, err)
+		}
+		changed = true
+	} else {
+		charsetValue, parseErr := settingsSection.Key(charsetKeyName).Int()
+		normalized := int(normalizeCharsetValue(charsetValue))
+		if parseErr != nil || charsetValue != normalized {
+			settingsSection.Key(charsetKeyName).SetValue(strconv.Itoa(normalized))
+			changed = true
+		}
+	}
+
+	return changed, nil
+}
+
 // initConfigFile 初始化配置文件
 func initConfigFile() {
-	// 检查配置文件是否存在
-	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		// 创建配置文件
+	info, statErr := os.Stat(configFile)
+	if os.IsNotExist(statErr) || (statErr == nil && info.Size() == 0) {
 		cfg := ini.Empty()
-
-		// 添加默认记录
-		defaultSection, err := cfg.NewSection("default_Records")
-		if err != nil {
-			log.Printf("创建default_Records节失败: %v", err)
+		if _, err := ensureConfigDefaults(cfg); err != nil {
+			log.Printf("初始化配置内容失败: %v", err)
 			return
 		}
-
-		// 添加代码中固定的默认记录
-		for _, tag := range defaultRecordOrder {
-			path := defaultRecords[tag]
-			_, err := defaultSection.NewKey(tag, path)
-			if err != nil {
-				log.Printf("添加默认记录失败: %v", err)
-			}
-		}
-
-		// 创建普通记录节
-		_, err = cfg.NewSection("Records")
-		if err != nil {
-			log.Printf("创建Records节失败: %v", err)
-			return
-		}
-
-		// 保存配置文件
-		err = cfg.SaveTo(configFile)
-		if err != nil {
+		if err := cfg.SaveTo(configFile); err != nil {
 			log.Printf("保存配置文件失败: %v", err)
 			return
 		}
-
 		log.Printf("创建配置文件成功: %s", configFile)
-	} else {
-		// 检查配置文件是否为空
-		info, err := os.Stat(configFile)
-		if err != nil {
-			log.Printf("获取配置文件信息失败: %v", err)
+		return
+	}
+	if statErr != nil {
+		log.Printf("获取配置文件信息失败: %v", statErr)
+		return
+	}
+
+	cfg, err := ini.Load(configFile)
+	if err != nil {
+		log.Printf("读取配置文件失败: %v", err)
+		return
+	}
+
+	changed, err := ensureConfigDefaults(cfg)
+	if err != nil {
+		log.Printf("补充配置默认项失败: %v", err)
+		return
+	}
+	if changed {
+		if err = cfg.SaveTo(configFile); err != nil {
+			log.Printf("保存补充后的配置文件失败: %v", err)
 			return
 		}
-
-		if info.Size() == 0 {
-			// 配置文件为空，生成默认内容
-			cfg := ini.Empty()
-
-			// 添加默认记录
-			defaultSection, err := cfg.NewSection("default_Records")
-			if err != nil {
-				log.Printf("创建default_Records节失败: %v", err)
-				return
-			}
-
-			// 添加代码中固定的默认记录
-			for _, tag := range defaultRecordOrder {
-				path := defaultRecords[tag]
-				_, err := defaultSection.NewKey(tag, path)
-				if err != nil {
-					log.Printf("添加默认记录失败: %v", err)
-				}
-			}
-
-			// 创建普通记录节
-			_, err = cfg.NewSection("Records")
-			if err != nil {
-				log.Printf("创建Records节失败: %v", err)
-				return
-			}
-
-			// 保存配置文件
-			err = cfg.SaveTo(configFile)
-			if err != nil {
-				log.Printf("保存配置文件失败: %v", err)
-				return
-			}
-
-			log.Printf("配置文件为空，生成默认内容: %s", configFile)
-		}
+		log.Printf("配置文件已补充缺省项: %s", configFile)
 	}
 }
 
-// 更新银两值
+// updateMoneyValue 更新银两值
 func updateMoneyValue(valueStr string) bool {
 	if editor == nil {
 		dialog.ShowError(fmt.Errorf("没有加载的存档文件"), characterWindow)
@@ -1317,8 +1388,23 @@ func loadFileRecords() {
 		return
 	}
 
+	if changed, err := ensureConfigDefaults(cfg); err != nil {
+		log.Printf("补充配置默认项失败: %v", err)
+	} else if changed {
+		if err = cfg.SaveTo(configFile); err != nil {
+			log.Printf("保存补充后的配置文件失败: %v", err)
+		}
+	}
+
+	charsetValue, err := cfg.Section(settingsSectionName).Key(charsetKeyName).Int()
+	if err != nil {
+		selectedCharset = models.CharsetTraditional
+	} else {
+		selectedCharset = normalizeCharsetValue(charsetValue)
+	}
+
 	// 加载默认记录
-	defaultSection := cfg.Section("default_Records")
+	defaultSection := cfg.Section(defaultRecordsSectionName)
 	for _, key := range defaultSection.Keys() {
 		item := FileRecordItem{
 			Tag:       key.Name(),
@@ -1329,7 +1415,7 @@ func loadFileRecords() {
 	}
 
 	// 加载普通记录
-	recordsSection := cfg.Section("Records")
+	recordsSection := cfg.Section(recordsSectionName)
 	for _, key := range recordsSection.Keys() {
 		item := FileRecordItem{
 			Tag:       key.Name(),
@@ -1339,7 +1425,7 @@ func loadFileRecords() {
 		fileRecords = append(fileRecords, item)
 	}
 
-	log.Printf("加载选择记录成功，共 %d 条记录", len(fileRecords))
+	log.Printf("加载选择记录成功，共 %d 条记录，版本: %s", len(fileRecords), charsetDisplayName(selectedCharset))
 }
 
 // saveFileRecords 保存选择记录
@@ -1348,16 +1434,26 @@ func saveFileRecords() {
 	cfg := ini.Empty()
 
 	// 添加默认记录节
-	defaultSection, err := cfg.NewSection("default_Records")
+	defaultSection, err := cfg.NewSection(defaultRecordsSectionName)
 	if err != nil {
-		log.Printf("创建default_Records节失败: %v", err)
+		log.Printf("创建%s节失败: %v", defaultRecordsSectionName, err)
 		return
 	}
 
 	// 添加普通记录节
-	recordsSection, err := cfg.NewSection("Records")
+	recordsSection, err := cfg.NewSection(recordsSectionName)
 	if err != nil {
-		log.Printf("创建Records节失败: %v", err)
+		log.Printf("创建%s节失败: %v", recordsSectionName, err)
+		return
+	}
+
+	settingsSection, err := cfg.NewSection(settingsSectionName)
+	if err != nil {
+		log.Printf("创建%s节失败: %v", settingsSectionName, err)
+		return
+	}
+	if _, err = settingsSection.NewKey(charsetKeyName, strconv.Itoa(int(selectedCharset))); err != nil {
+		log.Printf("添加%s配置失败: %v", charsetKeyName, err)
 		return
 	}
 

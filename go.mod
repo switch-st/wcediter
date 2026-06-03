@@ -1,4 +1,4 @@
-module wcediter
+module wceditor
 
 go 1.23.0
 
